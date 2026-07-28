@@ -31,14 +31,11 @@ async function getMembershipDetails(userId: string, companyId: string) {
       user_ids: [userId],
       first: 1,
     });
-
     const membership = memberships.data[0];
     if (membership) {
-      email = membership.email ?? "unbekannt";
+      email = membership.user?.email ?? "unbekannt";
       produkt = membership.product?.title ?? "unbekannt";
-      zyklus = membership.plan?.billing_period
-        ? `${membership.plan.billing_period} Tage`
-        : "unbekannt";
+      zyklus = membership.formatted_renewal_price ?? "unbekannt";
       status = membership.status ?? null;
     }
   } catch (e) {
@@ -47,6 +44,7 @@ async function getMembershipDetails(userId: string, companyId: string) {
 
   return { email, produkt, zyklus, status };
 }
+
 
 function statusTag(status: string | null): string {
   if (status === "trialing") return "🆕 Erstkunde (aktuell im 10-Tage-Trial)";
