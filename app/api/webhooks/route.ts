@@ -6,7 +6,7 @@ import { redis, tvNameKey } from "@/lib/redis";
 export async function POST(req: NextRequest) {
   const body = await req.text();
   const event = JSON.parse(body);
-  
+
   if (event.type === "payment.succeeded") {
 
     try {
@@ -36,12 +36,15 @@ export async function POST(req: NextRequest) {
         currency: payment.currency,
       };
 
+      // NEU: sagt uns, ob es ein Neu-Beitritt oder eine Verlängerung ist
+      const billingReason = payment.billing_reason ?? null;
+
       if (tvNameFromCheckout) {
-        await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, payment: paymentInfo });
+        await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, payment: paymentInfo, billingReason });
       } else {
         const existing = await redis.get<string>(tvNameKey(userId));
         if (existing) {
-          await notifyTvName({ userId, companyId, newName: null, payment: paymentInfo });
+          await notifyTvName({ userId, companyId, newName: null, payment: paymentInfo, billingReason });
         }
       }
     } catch (e) {
