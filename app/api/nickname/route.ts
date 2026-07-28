@@ -30,13 +30,14 @@ export async function POST(request: NextRequest) {
     let whopUsername = "unbekannt";
     let whopName = "unbekannt";
     let whopEmail = "unbekannt";
+    let debugInfo = "";
 
     try {
       const user = await whopsdk.users.retrieve(userId);
       whopUsername = user.username ?? "unbekannt";
       whopName = user.name ?? "unbekannt";
-    } catch (err) {
-      console.error("Konnte Whop-Nutzer nicht laden", err);
+    } catch (err: any) {
+      debugInfo += `\n⚠️ Nutzer-Fehler: ${err?.message ?? String(err)}`;
     }
 
     try {
@@ -48,12 +49,16 @@ export async function POST(request: NextRequest) {
       const memberUser = memberships.data[0]?.user;
       if (memberUser) {
         whopEmail = (memberUser as any).email ?? "unbekannt";
+      } else {
+        debugInfo += `\n⚠️ Keine Mitgliedschaft gefunden (userId: ${userId})`;
       }
-    } catch (err) {
-      console.error("Konnte E-Mail nicht laden", err);
+    } catch (err: any) {
+      debugInfo += `\n⚠️ Mitgliedschafts-Fehler: ${err?.message ?? String(err)}`;
     }
 
     const previousTvName = await redis.get<string>(`tvname:${userId}`);
+
+    const debugLine = debugInfo ? `\n\n🔧 **Debug:**${debugInfo}` : "";
 
     if (!previousTvName) {
       await sendDiscordMessage(
@@ -61,20 +66,21 @@ export async function POST(request: NextRequest) {
         `**TradingView Name:** ${tvName}\n` +
         `**Whop Username:** ${whopUsername}\n` +
         `**Name:** ${whopName}\n` +
-        `**E-Mail:** ${whopEmail}`
+        `**E-Mail:** ${whopEmail}` +
+        debugLine
       );
     } else if (previousTvName !== tvName) {
       await sendDiscordMessage(
         `✏️ **Bestehender Nutzer – Name geändert:** ${previousTvName} → ${tvName}\n` +
         `**Whop Username:** ${whopUsername}\n` +
         `**Name:** ${whopName}\n` +
-        `**E-Mail:** ${whopEmail}`
+        `**E-Mail:** ${whopEmail}` +
+        debugLine
       );
     }
 
     await redis.set(`tvname:${userId}`, tvName);
 
-    // Offene Zahlungen nachliefern, die vor dem Speichern des Namens eingegangen sind
     const pendingKey = `pending:${userId}`;
     const pending = await redis.lrange<any>(pendingKey, 0, -1);
 
