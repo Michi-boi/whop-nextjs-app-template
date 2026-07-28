@@ -32,7 +32,8 @@ export async function POST(req: Request) {
   const pending = await kv.get<number[]>(`pending:${userId}`);
   if (pending && pending.length > 0) {
     for (const amount of pending) {
-      await sendToDiscord(`💰 **Zahlung (nachgetragen):** $${amount} von **${nickname}**`.replace("${nickname}", newNickname));
+      await sendToDiscord(`💰 **Zahlung (nachgetragen):** $${amount} von **${newNickname}**`);
+
     }
     await kv.del(`pending:${userId}`);
   }
