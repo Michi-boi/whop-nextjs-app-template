@@ -26,18 +26,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Kein TradingView Name angegeben" }, { status: 400 });
     }
 
-    // Whop-Profildaten holen (Username, Name, E-Mail)
     let whopUsername = "unbekannt";
     let whopName = "unbekannt";
     let whopEmail = "unbekannt";
-    let debugInfo = "";
 
     try {
       const user = await whopsdk.users.retrieve(userId);
       whopUsername = user.username ?? "unbekannt";
       whopName = user.name ?? "unbekannt";
-    } catch (err: any) {
-      debugInfo += `\n⚠️ Nutzer-Fehler: ${err?.message ?? String(err)}`;
+    } catch (err) {
+      console.error("Konnte Whop-Nutzer nicht laden", err);
     }
 
     try {
@@ -49,16 +47,12 @@ export async function POST(request: NextRequest) {
       const memberUser = memberships.data[0]?.user;
       if (memberUser) {
         whopEmail = (memberUser as any).email ?? "unbekannt";
-      } else {
-        debugInfo += `\n⚠️ Keine Mitgliedschaft gefunden (userId: ${userId})`;
       }
-    } catch (err: any) {
-      debugInfo += `\n⚠️ Mitgliedschafts-Fehler: ${err?.message ?? String(err)}`;
+    } catch (err) {
+      console.error("Konnte E-Mail nicht laden", err);
     }
 
     const previousTvName = await redis.get<string>(`tvname:${userId}`);
-
-    const debugLine = debugInfo ? `\n\n🔧 **Debug:**${debugInfo}` : "";
 
     if (!previousTvName) {
       await sendDiscordMessage(
@@ -66,16 +60,14 @@ export async function POST(request: NextRequest) {
         `**TradingView Name:** ${tvName}\n` +
         `**Whop Username:** ${whopUsername}\n` +
         `**Name:** ${whopName}\n` +
-        `**E-Mail:** ${whopEmail}` +
-        debugLine
+        `**E-Mail:** ${whopEmail}`
       );
     } else if (previousTvName !== tvName) {
       await sendDiscordMessage(
         `✏️ **Bestehender Nutzer – Name geändert:** ${previousTvName} → ${tvName}\n` +
         `**Whop Username:** ${whopUsername}\n` +
         `**Name:** ${whopName}\n` +
-        `**E-Mail:** ${whopEmail}` +
-        debugLine
+        `**E-Mail:** ${whopEmail}`
       );
     }
 
