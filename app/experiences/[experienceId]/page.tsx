@@ -1,15 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useUser } from "@whop/frosted/client";
 
 export default function ExperiencePage() {
+  const { user } = useUser();
   const [nickname, setNickname] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
 
+  // companyId aus der URL auslesen (kommt aus [experienceId])
+  const [companyId, setCompanyId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Die companyId ist in den URL-Parametern oder im Whop Context verfügbar
+    // Für diese App-Experience ist sie: biz_ixlDPPqIy1alQ5
+    setCompanyId("biz_ixlDPPqIy1alQ5");
+  }, []);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!nickname.trim()) return;
+    if (!nickname.trim() || !user?.id || !companyId) return;
 
     setStatus("loading");
     setMessage("");
@@ -18,7 +29,11 @@ export default function ExperiencePage() {
       const res = await fetch("/api/nickname", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nickname: nickname.trim() }),
+        body: JSON.stringify({
+          userId: user.id,
+          companyId: companyId,
+          nickname: nickname.trim(),
+        }),
       });
 
       if (!res.ok) {
@@ -27,10 +42,15 @@ export default function ExperiencePage() {
 
       setStatus("done");
       setMessage("Dein TradingView Name wurde gespeichert! ✅");
+      setNickname("");
     } catch (err) {
       setStatus("error");
       setMessage("Etwas ist schiefgelaufen. Bitte versuche es erneut.");
     }
+  }
+
+  if (!user) {
+    return <p style={{ margin: "60px auto", maxWidth: 480 }}>Wird geladen...</p>;
   }
 
   return (
