@@ -25,10 +25,6 @@ async function getMembershipDetails(userId: string, companyId: string) {
   let zyklus = "unbekannt";
   let status: string | null = null;
 
-  // --- TEMP LOGGING START ---
-  console.log("Rufe Mitgliedschaft ab mit:", { userId, companyId });
-  // --- TEMP LOGGING END ---
-
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
@@ -41,16 +37,8 @@ async function getMembershipDetails(userId: string, companyId: string) {
       produkt = membership.product?.title ?? "unbekannt";
       zyklus = (membership as any).formatted_renewal_price ?? "unbekannt";
       status = membership.status ?? null;
-    } else {
-      // --- TEMP LOGGING START ---
-      console.log("Keine Mitgliedschaft gefunden für:", { userId, companyId });
-      // --- TEMP LOGGING END ---
     }
   } catch (e: any) {
-    // --- TEMP LOGGING START ---
-    console.error("Fehler Details:", JSON.stringify(e?.error ?? e, null, 2));
-    console.error("Verwendete Parameter:", { userId, companyId });
-    // --- TEMP LOGGING END ---
     console.error("Fehler beim Laden der Mitgliedschaft:", e);
   }
 
@@ -63,10 +51,6 @@ function statusTag(status: string | null): string {
   return "";
 }
 
-/**
- * Findet die Antwort auf die Checkout-Frage "Dein TradingView-Benutzername"
- * in den custom_field_responses einer Membership.
- */
 export function extractTvNameFromMembership(membership: any): string | null {
   const answer = membership?.custom_field_responses?.find(
     (r: any) => r.question?.trim() === TV_QUESTION_TEXT
@@ -74,22 +58,19 @@ export function extractTvNameFromMembership(membership: any): string | null {
   return answer?.answer ?? null;
 }
 
-/**
- * Zentrale Funktion: speichert den TV-Namen, vergleicht alt/neu,
- * und verschickt EINE Discord-Nachricht (ggf. kombiniert mit Zahlungsinfo).
- */
 export async function notifyTvName(params: {
   userId: string;
   companyId: string;
   newName: string | null;
   payment?: PaymentInfo | null;
+  billingReason?: string | null; // NEU
 }) {
-  const { userId, companyId, newName, payment } = params;
+  const { userId, companyId, newName, payment, billingReason } = params;
   if (!newName && !payment) return;
 
   const oldName = await redis.get<string>(tvNameKey(userId));
   const effectiveName = newName ?? oldName;
-  if (!effectiveName) return; // kein Name im System und keiner geliefert -> Stille (siehe Tabelle)
+  if (!effectiveName) return;
 
   const isNew = !!newName && !oldName;
   const isChanged = !!newName && !!oldName && oldName !== newName;
@@ -98,7 +79,6 @@ export async function notifyTvName(params: {
     await redis.set(tvNameKey(userId), newName as string);
   }
 
-  // Weder Name-Änderung noch Zahlung -> keine Nachricht
   if (!isNew && !isChanged && !payment) return;
 
   const { username, name } = await getUserBasicInfo(userId);
@@ -106,7 +86,15 @@ export async function notifyTvName(params: {
 
   let icon = "💰";
   let title = "Zahlung erhalten";
-  if (isNew) {
+
+  // NEU: Bei einer Zahlung entscheidet billingReason über die Überschrift
+  if (payment && billingReason === "subscription_create") {
+    icon = "🆕";
+    title = "Neue Mitgliedschaft";
+  } else if (payment && billingReason === "subscription_cycle") {
+    icon = "🔄";
+    title = "Erfolgreiche Verlängerung";
+  } else if (isNew) {
     icon = "🆕";
     title = "Neuer TradingView-Name eingetragen";
   } else if (isChanged) {
