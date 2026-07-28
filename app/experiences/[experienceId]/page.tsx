@@ -1,26 +1,32 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useUser } from "@whop/frosted/client";
 
 export default function ExperiencePage() {
-  const { user } = useUser();
   const [nickname, setNickname] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
 
-  // companyId aus der URL auslesen (kommt aus [experienceId])
-  const [companyId, setCompanyId] = useState<string | null>(null);
+  const companyId = "biz_ixlDPPqIy1alQ5"; // Deine Company
 
   useEffect(() => {
-    // Die companyId ist in den URL-Parametern oder im Whop Context verfügbar
-    // Für diese App-Experience ist sie: biz_ixlDPPqIy1alQ5
-    setCompanyId("biz_ixlDPPqIy1alQ5");
+    // Versuche userId aus dem Whop-Cookie zu holen
+    const cookies = document.cookie.split("; ");
+    const whopUserCookie = cookies.find((c) => c.startsWith("whop-user="));
+    if (whopUserCookie) {
+      const userId = whopUserCookie.split("=")[1];
+      setUserId(userId);
+    }
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!nickname.trim() || !user?.id || !companyId) return;
+    if (!nickname.trim() || !userId) {
+      setMessage("Fehler: Nutzer-ID nicht gefunden. Bitte aktualisiere die Seite.");
+      setStatus("error");
+      return;
+    }
 
     setStatus("loading");
     setMessage("");
@@ -30,7 +36,7 @@ export default function ExperiencePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: user.id,
+          userId: userId,
           companyId: companyId,
           nickname: nickname.trim(),
         }),
@@ -47,10 +53,6 @@ export default function ExperiencePage() {
       setStatus("error");
       setMessage("Etwas ist schiefgelaufen. Bitte versuche es erneut.");
     }
-  }
-
-  if (!user) {
-    return <p style={{ margin: "60px auto", maxWidth: 480 }}>Wird geladen...</p>;
   }
 
   return (
@@ -78,15 +80,15 @@ export default function ExperiencePage() {
 
         <button
           type="submit"
-          disabled={status === "loading"}
+          disabled={status === "loading" || !userId}
           style={{
             padding: "10px 12px",
             borderRadius: 8,
             border: "none",
-            background: "#5865F2",
+            background: userId ? "#5865F2" : "#ccc",
             color: "white",
             fontSize: 16,
-            cursor: "pointer",
+            cursor: userId ? "pointer" : "not-allowed",
           }}
         >
           {status === "loading" ? "Speichere..." : "Speichern"}
