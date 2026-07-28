@@ -32,20 +32,25 @@ export async function POST(request: NextRequest) {
     let whopEmail = "unbekannt";
 
     try {
+      const user = await whopsdk.users.retrieve(userId);
+      whopUsername = user.username ?? "unbekannt";
+      whopName = user.name ?? "unbekannt";
+    } catch (err) {
+      console.error("Konnte Whop-Nutzer nicht laden", err);
+    }
+
+    try {
       const memberships = await whopsdk.memberships.list({
         company_id: COMPANY_ID,
         user_ids: [userId],
         first: 1,
       });
-      const user = memberships.data[0]?.user;
-      if (user) {
-        whopUsername = user.username ?? "unbekannt";
-        whopName = user.name ?? "unbekannt";
-        whopEmail = (user as any).email ?? "unbekannt";
-
+      const memberUser = memberships.data[0]?.user;
+      if (memberUser) {
+        whopEmail = (memberUser as any).email ?? "unbekannt";
       }
     } catch (err) {
-      console.error("Konnte Whop-Profildaten nicht laden", err);
+      console.error("Konnte E-Mail nicht laden", err);
     }
 
     const previousTvName = await redis.get<string>(`tvname:${userId}`);
