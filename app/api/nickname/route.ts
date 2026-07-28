@@ -1,42 +1,53 @@
+import { headers } from "next/headers";
+import type { NextRequest } from "next/server";
+import { whopsdk } from "@/lib/whop-sdk";
 import { Redis } from "@upstash/redis";
-import { NextResponse } from "next/server";
 
-const kv = Redis.fromEnv();
+const redis = Redis.fromEnv();
 
-async function sendToDiscord(message: string) {
+export async function POST(request: NextRequest) {
+  const { userId } = await whopsdk.verifyUserToken(await headers());
+  const { nickname } = await request.json();
+  const tvName = (nickname ?? "").trim();
+
+  if (!tvName) {
+    return new Response("TV Username fehlt", { status: 400 });
+  }
+
+  const previousTvName = await redis.get<string>(`tvname:${userId}`);
+  await redis.set(`tvname:${userId}`, tvName);
+
+  if (!previousTvName) {
+    await sendDiscord(`🆕 **Neuer Nutzer – Name gespeichert**\n**TV Username:** ${tvName}`);
+  } else if (previousTvName !== tvName) {
+    await sendDiscord(`✏️ **Bestehender Nutzer – Name geändert:** ${previousTvName} → ${tvName}`);
+  }
+
+  const pending = await redis.lrange<string>(`pending:${userId}`, 0, -1);
+  for (const raw of pending) {
+    const p = JSON.parse(raw);
+    await sendDiscord(
+      `💰 **Nachgemeldete Zahlung**\n\n` +
+        `**TV Username:** ${tvName}\n` +
+        `**Whop Username:** ${p.whopUsername}\n` +
+        `**Name:** ${p.name}\n` +
+        `**E-Mail:** ${p.email}\n` +
+        `**Produkt:** ${p.produkt}\n` +
+        `**Zahlungszyklus:** ${p.zyklus}\n` +
+        `**Betrag:** ${p.betrag} ${p.waehrung}`
+    );
+  }
+  if (pending.length > 0) {
+    await redis.del(`pending:${userId}`);
+  }
+
+  return Response.json({ success: true, tvName });
+}
+
+async function sendDiscord(content: string) {
   await fetch(process.env.DISCORD_WEBHOOK_URL!, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: message }),
+    body: JSON.stringify({ content }),
   });
-}
-
-export async function POST(req: Request) {
-  const form = await req.formData();
-  const userId = form.get("userId") as string;
-  const newNickname = (form.get("nickname") as string)?.trim();
-
-  if (!userId || !newNickname) {
-    return NextResponse.json({ error: "Fehlende Daten" }, { status: 400 });
-  }
-
-  const oldNickname = await kv.get<string>(`nickname:${userId}`);
-  await kv.set(`nickname:${userId}`, newNickname);
-
-  if (oldNickname && oldNickname !== newNickname) {
-    await sendToDiscord(`✏️ **Bestehender Nutzer – Name geändert:** ${oldNickname} → ${newNickname}`);
-  } else if (!oldNickname) {
-    await sendToDiscord(`🆕 **Neuer Nutzer – Nickname gespeichert:** ${newNickname}`);
-  }
-
-  const pending = await kv.get<number[]>(`pending:${userId}`);
-  if (pending && pending.length > 0) {
-    for (const amount of pending) {
-      await sendToDiscord(`💰 **Zahlung (nachgetragen):** $${amount} von **${newNickname}**`);
-
-    }
-    await kv.del(`pending:${userId}`);
-  }
-
-  return NextResponse.redirect(new URL("/", req.url));
 }
