@@ -6,17 +6,17 @@ const kv = Redis.fromEnv();
 
 export default async function ExperiencePage() {
   const { userId } = await whopsdk.verifyUserToken(await headers());
-  const existingNickname = await kv.get<string>(`nickname:${userId}`);
+  const existingNickname = await kv.get<string>(`TradingView Name:${userId}`);
 
   return (
     <div style={{ padding: 24, fontFamily: "sans-serif", maxWidth: 400, margin: "0 auto" }}>
-      <h2>Dein Nickname</h2>
+      <h2>Dein TradingView Name</h2>
       <p>Dieser Name wird bei jeder Zahlung an Discord gesendet.</p>
       <form action="/api/nickname" method="POST">
         <input type="hidden" name="userId" value={userId} />
         <input
           type="text"
-          name="nickname"
+          name="TradingView Name"
           defaultValue={existingNickname ?? ""}
           placeholder="z.B. MaxMustermann"
           required
