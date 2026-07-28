@@ -1,5 +1,7 @@
-import { kv } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
 import { NextResponse } from "next/server";
+
+const kv = Redis.fromEnv();
 
 async function sendToDiscord(message: string) {
   await fetch(process.env.DISCORD_WEBHOOK_URL!, {
@@ -27,11 +29,10 @@ export async function POST(req: Request) {
     await sendToDiscord(`🆕 **Neuer Nutzer – Nickname gespeichert:** ${newNickname}`);
   }
 
-  // Falls Zahlungen ankamen, bevor der Nickname gesetzt war, jetzt nachsenden
   const pending = await kv.get<number[]>(`pending:${userId}`);
   if (pending && pending.length > 0) {
     for (const amount of pending) {
-      await sendToDiscord(`💰 **Zahlung (nachgetragen):** $${amount} von **${newNickname}**`);
+      await sendToDiscord(`💰 **Zahlung (nachgetragen):** $${amount} von **${nickname}**`.replace("${nickname}", newNickname));
     }
     await kv.del(`pending:${userId}`);
   }
