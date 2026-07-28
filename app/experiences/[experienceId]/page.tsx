@@ -11,13 +11,15 @@ export default function ExperiencePage() {
   const companyId = "biz_ixlDPPqIy1alQ5"; // Deine Company
 
   useEffect(() => {
-    // Versuche userId aus dem Whop-Cookie zu holen
-    const cookies = document.cookie.split("; ");
-    const whopUserCookie = cookies.find((c) => c.startsWith("whop-user="));
-    if (whopUserCookie) {
-      const userId = whopUserCookie.split("=")[1];
-      setUserId(userId);
-    }
+    // Hole die aktuelle User-ID vom Server
+    fetch("/api/get-user")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.userId) {
+          setUserId(data.userId);
+        }
+      })
+      .catch((err) => console.error("Fehler beim Laden der User-ID:", err));
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
