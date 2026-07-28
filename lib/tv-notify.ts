@@ -25,6 +25,10 @@ async function getMembershipDetails(userId: string, companyId: string) {
   let zyklus = "unbekannt";
   let status: string | null = null;
 
+  // --- TEMP LOGGING START ---
+  console.log("Rufe Mitgliedschaft ab mit:", { userId, companyId });
+  // --- TEMP LOGGING END ---
+
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
@@ -37,14 +41,21 @@ async function getMembershipDetails(userId: string, companyId: string) {
       produkt = membership.product?.title ?? "unbekannt";
       zyklus = (membership as any).formatted_renewal_price ?? "unbekannt";
       status = membership.status ?? null;
+    } else {
+      // --- TEMP LOGGING START ---
+      console.log("Keine Mitgliedschaft gefunden für:", { userId, companyId });
+      // --- TEMP LOGGING END ---
     }
-  } catch (e) {
+  } catch (e: any) {
+    // --- TEMP LOGGING START ---
+    console.error("Fehler Details:", JSON.stringify(e?.error ?? e, null, 2));
+    console.error("Verwendete Parameter:", { userId, companyId });
+    // --- TEMP LOGGING END ---
     console.error("Fehler beim Laden der Mitgliedschaft:", e);
   }
 
   return { email, produkt, zyklus, status };
 }
-
 
 function statusTag(status: string | null): string {
   if (status === "trialing") return "🆕 Erstkunde (aktuell im 10-Tage-Trial)";
