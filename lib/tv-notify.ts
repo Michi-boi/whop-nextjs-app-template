@@ -33,7 +33,7 @@ async function getMembershipDetails(userId: string, companyId: string) {
     });
     const membership = memberships.data[0];
     if (membership) {
-      email = membership.user?.email ?? "unbekannt";
+      email = (membership.user as any)?.email ?? "unbekannt";
       produkt = membership.product?.title ?? "unbekannt";
       zyklus = membership.formatted_renewal_price ?? "unbekannt";
       status = membership.status ?? null;
