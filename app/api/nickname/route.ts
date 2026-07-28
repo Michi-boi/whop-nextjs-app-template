@@ -79,12 +79,12 @@ export async function POST(request: NextRequest) {
     for (const p of pending) {
       await sendDiscordMessage(
         `💰 **Nachgemeldete Zahlung**\n` +
-        `**Betrag:** ${p.amount}\n` +
+        `**Betrag:** ${p.betrag} ${p.waehrung}\n` +
         `**TradingView Name:** ${tvName}\n` +
         `**Whop Username:** ${whopUsername}\n` +
         `**Name:** ${whopName}\n` +
         `**E-Mail:** ${whopEmail}\n` +
-        `**Produkt:** ${p.product}\n` +
+        `**Produkt:** ${p.produkt}\n` +
         `**Zahlungszyklus:** ${p.zyklus}`
       );
     }
