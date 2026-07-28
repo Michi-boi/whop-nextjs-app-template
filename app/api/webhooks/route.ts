@@ -31,7 +31,7 @@ export async function POST(request: NextRequest): Promise<Response> {
 
 async function handlePaymentSucceeded(payment: Payment) {
 	const userId = payment.user?.id;
-	const amount = payment.total;
+	const amount = payment.total ?? 0;
 
 	if (!userId) return;
 
