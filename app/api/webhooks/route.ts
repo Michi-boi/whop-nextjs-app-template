@@ -1,25 +1,41 @@
-import { waitUntil } from "@vercel/functions";
-import type { Payment } from "@whop/sdk/resources.js";
-import type { NextRequest } from "next/server";
-import { whopsdk } from "@/lib/whop-sdk";
+import { Redis } from "@upstash/redis";
+import { NextResponse } from "next/server";
 
-export async function POST(request: NextRequest): Promise<Response> {
-	// Validate the webhook to ensure it's from Whop
-	const requestBodyText = await request.text();
-	const headers = Object.fromEntries(request.headers);
-	const webhookData = whopsdk.webhooks.unwrap(requestBodyText, { headers });
+const kv = Redis.fromEnv();
 
-	// Handle the webhook event
-	if (webhookData.type === "payment.succeeded") {
-		waitUntil(handlePaymentSucceeded(webhookData.data));
-	}
-
-	// Make sure to return a 2xx status code quickly. Otherwise the webhook will be retried.
-	return new Response("OK", { status: 200 });
+async function sendToDiscord(message: string) {
+  await fetch(process.env.DISCORD_WEBHOOK_URL!, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: message }),
+  });
 }
 
-async function handlePaymentSucceeded(payment: Payment) {
-	// This is a placeholder for a potentially long running operation
-	// In a real scenario, you might need to fetch user data, update a database, etc.
-	console.log("[PAYMENT SUCCEEDED]", payment);
+export async function POST(req: Request) {
+  const form = await req.formData();
+  const userId = form.get("userId") as string;
+  const newNickname = (form.get("nickname") as string)?.trim();
+
+  if (!userId || !newNickname) {
+    return NextResponse.json({ error: "Fehlende Daten" }, { status: 400 });
+  }
+
+  const oldNickname = await kv.get<string>(`nickname:${userId}`);
+  await kv.set(`nickname:${userId}`, newNickname);
+
+  if (oldNickname && oldNickname !== newNickname) {
+    await sendToDiscord(`✏️ **Bestehender Nutzer – Name geändert:** ${oldNickname} → ${newNickname}`);
+  } else if (!oldNickname) {
+    await sendToDiscord(`🆕 **Neuer Nutzer – Nickname gespeichert:** ${newNickname}`);
+  }
+
+  const pending = await kv.get<number[]>(`pending:${userId}`);
+  if (pending && pending.length > 0) {
+    for (const amount of pending) {
+      await sendToDiscord(`💰 **Zahlung (nachgetragen):** $${amount} von **${newNickname}**`);
+    }
+    await kv.del(`pending:${userId}`);
+  }
+
+  return NextResponse.redirect(new URL("/", req.url));
 }
