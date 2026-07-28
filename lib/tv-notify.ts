@@ -28,9 +28,10 @@ async function getMembershipDetails(userId: string, companyId: string) {
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
-      user_id: userId,
+      user_ids: [userId],
       first: 1,
     });
+
     const membership = memberships.data[0];
     if (membership) {
       email = membership.email ?? "unbekannt";
