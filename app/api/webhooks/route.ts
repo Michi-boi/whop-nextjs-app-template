@@ -19,9 +19,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ received: true });
       }
 
-      // Vollständige Mitgliedschaft laden -> liefert gleichzeitig:
-      // 1) den TradingView-Namen aus der Checkout-Frage (custom_field_responses)
-      // 2) den Trial-Status (status: "trialing" = Erstkunde, sonst Bestandskunde)
       let tvNameFromCheckout: string | null = null;
 
       if (membershipId) {
@@ -39,25 +36,12 @@ export async function POST(req: NextRequest) {
       };
 
       if (tvNameFromCheckout) {
-        // Name kam über die Checkout-Frage -> EINE kombinierte Nachricht (Name + Zahlung)
-        await notifyTvName({
-          userId,
-          companyId,
-          newName: tvNameFromCheckout,
-          payment: paymentInfo,
-        });
+        await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, payment: paymentInfo });
       } else {
-        // Kein Name über Checkout -> nur senden, wenn schon einer im System existiert
         const existing = await redis.get<string>(tvNameKey(userId));
         if (existing) {
-          await notifyTvName({
-            userId,
-            companyId,
-            newName: null,
-            payment: paymentInfo,
-          });
+          await notifyTvName({ userId, companyId, newName: null, payment: paymentInfo });
         }
-        // sonst: keine Nachricht (Regel "Zahlung ohne TV-Name im System")
       }
     } catch (e) {
       console.error("Fehler bei payment.succeeded Verarbeitung:", e);
