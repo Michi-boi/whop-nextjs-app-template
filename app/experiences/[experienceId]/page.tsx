@@ -61,7 +61,7 @@ export default function ExperiencePage() {
     <div style={{ maxWidth: 480, margin: "60px auto", padding: 24, fontFamily: "sans-serif" }}>
       <h1 style={{ fontSize: 22, marginBottom: 8 }}>Dein TradingView Name</h1>
       <p style={{ color: "#666", marginBottom: 20 }}>
-        Trage hier deinen TradingView-Benutzernamen ein, damit wir dich zuordnen können.
+        Hier kannst du deinen TradingView Benutzernamen ändern oder nachtragen.
       </p>
 
       <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
