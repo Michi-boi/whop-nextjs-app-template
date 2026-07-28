@@ -42,7 +42,8 @@ async function handlePaymentSucceeded(payment: Payment) {
   try {
     if (payment.membership?.id) {
       const membership = await whopsdk.memberships.retrieve(payment.membership.id);
-      zyklus = zahlungszyklus(membership.formatted_renewal_price);
+      zyklus = zahlungszyklus((membership as any).formatted_renewal_price);
+
     }
   } catch (err) {
     console.error("Membership konnte nicht geladen werden", err);
