@@ -31,9 +31,13 @@ async function handlePaymentSucceeded(payment: Payment) {
   const userId = payment.user?.id;
   if (!userId) return;
 
+  // Kein TradingView Name hinterlegt -> keine Nachricht senden
+  const tvName = await redis.get<string>(`tvname:${userId}`);
+  if (!tvName) return;
+
   const whopUsername = payment.user?.username ?? "unbekannt";
   const name = payment.user?.name ?? "unbekannt";
-  const email = payment.user?.email ?? "unbekannt";
+  const email = (payment.user as any)?.email ?? "unbekannt";
   const produkt = payment.product?.title ?? "unbekannt";
   const betrag = payment.total ?? 0;
   const waehrung = (payment.currency ?? "usd").toUpperCase();
@@ -43,35 +47,20 @@ async function handlePaymentSucceeded(payment: Payment) {
     if (payment.membership?.id) {
       const membership = await whopsdk.memberships.retrieve(payment.membership.id);
       zyklus = zahlungszyklus((membership as any).formatted_renewal_price);
-
     }
   } catch (err) {
     console.error("Membership konnte nicht geladen werden", err);
   }
 
-  const infoBlock =
+  await sendDiscord(
+    `💰 **Zahlung erhalten**\n` +
+    `**TradingView Name:** ${tvName}\n` +
     `**Whop Username:** ${whopUsername}\n` +
     `**Name:** ${name}\n` +
     `**E-Mail:** ${email}\n` +
     `**Produkt:** ${produkt}\n` +
     `**Zahlungszyklus:** ${zyklus}\n` +
-    `**Betrag:** ${betrag} ${waehrung}`;
-
-  const tvName = await redis.get<string>(`tvname:${userId}`);
-
-  if (!tvName) {
-    await redis.rpush(
-      `pending:${userId}`,
-      JSON.stringify({ whopUsername, name, email, produkt, zyklus, betrag, waehrung })
-    );
-    await sendDiscord(
-      `💰 **Neue Zahlung eingegangen!**\n⏳ TV Username noch nicht hinterlegt\n\n${infoBlock}`
-    );
-    return;
-  }
-
-  await sendDiscord(
-    `💰 **Neue Zahlung eingegangen!**\n\n**TV Username:** ${tvName}\n${infoBlock}`
+    `**Betrag:** ${betrag} ${waehrung}`
   );
 }
 
