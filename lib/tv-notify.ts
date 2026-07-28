@@ -35,7 +35,7 @@ async function getMembershipDetails(userId: string, companyId: string) {
     if (membership) {
       email = (membership.user as any)?.email ?? "unbekannt";
       produkt = membership.product?.title ?? "unbekannt";
-      zyklus = membership.formatted_renewal_price ?? "unbekannt";
+      zyklus = (membership as any).formatted_renewal_price ?? "unbekannt";
       status = membership.status ?? null;
     }
   } catch (e) {
