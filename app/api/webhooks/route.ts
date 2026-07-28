@@ -2,24 +2,16 @@ import { waitUntil } from "@vercel/functions";
 import type { Payment } from "@whop/sdk/resources.js";
 import type { NextRequest } from "next/server";
 import { whopsdk } from "@/lib/whop-sdk";
-import { Redis } from "@upstash/redis";
-
-const redis = Redis.fromEnv();
-
-function zahlungszyklus(formatted?: string | null): string {
-  if (!formatted) return "Einmalig";
-  if (formatted.includes("/ month")) return "Monatlich";
-  if (formatted.includes("/ year")) return "Jährlich";
-  if (formatted.includes("/ week")) return "Wöchentlich";
-  if (formatted.includes("/ day")) return "Täglich";
-  return "Einmalig";
-}
+import { notifyTvName, extractTvNameFromMembership } from "@/lib/tv-notify";
+import { redis, tvNameKey } from "@/lib/redis";
 
 export async function POST(request: NextRequest): Promise<Response> {
+  // Signatur prüfen -> stellt sicher, dass die Anfrage wirklich von Whop kommt
   const requestBodyText = await request.text();
   const headers = Object.fromEntries(request.headers);
   const webhookData = whopsdk.webhooks.unwrap(requestBodyText, { headers });
 
+  // Verarbeitung im Hintergrund, damit wir sofort mit 200 OK antworten
   if (webhookData.type === "payment.succeeded") {
     waitUntil(handlePaymentSucceeded(webhookData.data));
   }
@@ -28,46 +20,57 @@ export async function POST(request: NextRequest): Promise<Response> {
 }
 
 async function handlePaymentSucceeded(payment: Payment) {
-  const userId = payment.user?.id;
-  if (!userId) return;
-
-  // Kein TradingView Name hinterlegt -> keine Nachricht senden
-  const tvName = await redis.get<string>(`tvname:${userId}`);
-  if (!tvName) return;
-
-  const whopUsername = payment.user?.username ?? "unbekannt";
-  const name = payment.user?.name ?? "unbekannt";
-  const email = (payment.user as any)?.email ?? "unbekannt";
-  const produkt = payment.product?.title ?? "unbekannt";
-  const betrag = payment.total ?? 0;
-  const waehrung = (payment.currency ?? "usd").toUpperCase();
-
-  let zyklus = "unbekannt";
   try {
-    if (payment.membership?.id) {
-      const membership = await whopsdk.memberships.retrieve(payment.membership.id);
-      zyklus = zahlungszyklus((membership as any).formatted_renewal_price);
+    const membershipId = payment.membership?.id;
+    const userId = payment.user?.id;
+    const companyId = payment.company?.id;
+
+    if (!userId || !companyId) {
+      console.error("payment.succeeded: userId oder companyId fehlt", payment.id);
+      return;
     }
-  } catch (err) {
-    console.error("Membership konnte nicht geladen werden", err);
+
+    // Vollständige Mitgliedschaft laden -> liefert gleichzeitig:
+    // 1) den TradingView-Namen aus der Checkout-Frage (custom_field_responses)
+    // 2) den Trial-Status (status: "trialing" = Erstkunde, sonst Bestandskunde)
+    let tvNameFromCheckout: string | null = null;
+
+    if (membershipId) {
+      try {
+        const membership = await whopsdk.memberships.retrieve(membershipId);
+        tvNameFromCheckout = extractTvNameFromMembership(membership);
+      } catch (e) {
+        console.error("Fehler beim Laden der Mitgliedschaft:", e);
+      }
+    }
+
+    const paymentInfo = {
+      amount: payment.final_amount ?? payment.amount,
+      currency: payment.currency,
+    };
+
+    if (tvNameFromCheckout) {
+      // Name kam über die Checkout-Frage -> EINE kombinierte Nachricht (Name + Zahlung)
+      await notifyTvName({
+        userId,
+        companyId,
+        newName: tvNameFromCheckout,
+        payment: paymentInfo,
+      });
+    } else {
+      // Kein Name über Checkout -> nur senden, wenn schon einer im System existiert
+      const existing = await redis.get<string>(tvNameKey(userId));
+      if (existing) {
+        await notifyTvName({
+          userId,
+          companyId,
+          newName: null,
+          payment: paymentInfo,
+        });
+      }
+      // sonst: keine Nachricht (Regel "Zahlung ohne TV-Name im System")
+    }
+  } catch (e) {
+    console.error("Fehler bei payment.succeeded Verarbeitung:", e);
   }
-
-  await sendDiscord(
-    `💰 **Zahlung erhalten**\n` +
-    `**TradingView Name:** ${tvName}\n` +
-    `**Whop Username:** ${whopUsername}\n` +
-    `**Name:** ${name}\n` +
-    `**E-Mail:** ${email}\n` +
-    `**Produkt:** ${produkt}\n` +
-    `**Zahlungszyklus:** ${zyklus}\n` +
-    `**Betrag:** ${betrag} ${waehrung}`
-  );
-}
-
-async function sendDiscord(content: string) {
-  await fetch(process.env.DISCORD_WEBHOOK_URL!, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
 }
