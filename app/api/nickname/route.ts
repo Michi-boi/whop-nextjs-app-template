@@ -41,7 +41,8 @@ export async function POST(request: NextRequest) {
       if (user) {
         whopUsername = user.username ?? "unbekannt";
         whopName = user.name ?? "unbekannt";
-        whopEmail = user.email ?? "unbekannt";
+        whopEmail = (user as any).email ?? "unbekannt";
+
       }
     } catch (err) {
       console.error("Konnte Whop-Profildaten nicht laden", err);
