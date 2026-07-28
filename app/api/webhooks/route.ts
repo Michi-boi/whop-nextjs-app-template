@@ -6,8 +6,9 @@ import { redis, tvNameKey } from "@/lib/redis";
 export async function POST(req: NextRequest) {
   const body = await req.text();
   const event = JSON.parse(body);
+  
+  if (event.type === "payment.succeeded") {
 
-  if (event.action === "payment.succeeded") {
     try {
       const payment = event.data;
       const membershipId = payment.membership?.id;
