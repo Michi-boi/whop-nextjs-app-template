@@ -15,6 +15,15 @@ async function sendDiscordMessage(content: string) {
   });
 }
 
+function zahlungszyklus(formatted?: string | null): string {
+  if (!formatted) return "unbekannt";
+  if (formatted.includes("/ month")) return "Monatlich";
+  if (formatted.includes("/ year")) return "Jährlich";
+  if (formatted.includes("/ week")) return "Wöchentlich";
+  if (formatted.includes("/ day")) return "Täglich";
+  return "Einmalig";
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { userId } = await whopsdk.verifyUserToken(request);
@@ -29,6 +38,8 @@ export async function POST(request: NextRequest) {
     let whopUsername = "unbekannt";
     let whopName = "unbekannt";
     let whopEmail = "unbekannt";
+    let produkt = "unbekannt";
+    let zyklus = "unbekannt";
 
     try {
       const user = await whopsdk.users.retrieve(userId);
@@ -44,54 +55,37 @@ export async function POST(request: NextRequest) {
         user_ids: [userId],
         first: 1,
       });
-      const memberUser = memberships.data[0]?.user;
-      if (memberUser) {
-        whopEmail = (memberUser as any).email ?? "unbekannt";
+      const membership = memberships.data[0];
+      if (membership) {
+        whopEmail = (membership.user as any)?.email ?? "unbekannt";
+        produkt = membership.product?.title ?? "unbekannt";
+        zyklus = zahlungszyklus((membership as any).formatted_renewal_price);
       }
     } catch (err) {
-      console.error("Konnte E-Mail nicht laden", err);
+      console.error("Konnte Mitgliedschaftsdaten nicht laden", err);
     }
 
     const previousTvName = await redis.get<string>(`tvname:${userId}`);
 
+    const infoBlock =
+      `**TradingView Name:** ${tvName}\n` +
+      `**Whop Username:** ${whopUsername}\n` +
+      `**Name:** ${whopName}\n` +
+      `**E-Mail:** ${whopEmail}\n` +
+      `**Produkt:** ${produkt}\n` +
+      `**Zahlungszyklus:** ${zyklus}`;
+
     if (!previousTvName) {
-      await sendDiscordMessage(
-        `🆕 **Neuer Nutzer – Name gespeichert**\n` +
-        `**TradingView Name:** ${tvName}\n` +
-        `**Whop Username:** ${whopUsername}\n` +
-        `**Name:** ${whopName}\n` +
-        `**E-Mail:** ${whopEmail}`
-      );
+      await sendDiscordMessage(`🆕 **Neuer Nutzer – Name gespeichert**\n${infoBlock}`);
     } else if (previousTvName !== tvName) {
       await sendDiscordMessage(
-        `✏️ **Bestehender Nutzer – Name geändert:** ${previousTvName} → ${tvName}\n` +
-        `**Whop Username:** ${whopUsername}\n` +
-        `**Name:** ${whopName}\n` +
-        `**E-Mail:** ${whopEmail}`
+        `✏️ **Bestehender Nutzer – Name geändert: ${previousTvName} → ${tvName}**\n${infoBlock}`
       );
+    } else {
+      await sendDiscordMessage(`ℹ️ **Name erneut bestätigt (unverändert)**\n${infoBlock}`);
     }
 
     await redis.set(`tvname:${userId}`, tvName);
-
-    const pendingKey = `pending:${userId}`;
-    const pending = await redis.lrange<any>(pendingKey, 0, -1);
-
-    for (const p of pending) {
-      await sendDiscordMessage(
-        `💰 **Nachgemeldete Zahlung**\n` +
-        `**Betrag:** ${p.betrag} ${p.waehrung}\n` +
-        `**TradingView Name:** ${tvName}\n` +
-        `**Whop Username:** ${whopUsername}\n` +
-        `**Name:** ${whopName}\n` +
-        `**E-Mail:** ${whopEmail}\n` +
-        `**Produkt:** ${p.produkt}\n` +
-        `**Zahlungszyklus:** ${p.zyklus}`
-      );
-    }
-
-    if (pending.length > 0) {
-      await redis.del(pendingKey);
-    }
 
     return NextResponse.json({ success: true });
   } catch (err) {
