@@ -1,30 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { redis, tvNameKey } from "@/lib/redis";
 import { notifyTvName } from "@/lib/tv-notify";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function POST(req: NextRequest) {
+  // ... Rest bleibt exakt gleich
+
   try {
     const { userId, companyId, nickname } = await req.json();
-
     if (!userId || !companyId || !nickname) {
-      return NextResponse.json(
-        { error: "userId, companyId und nickname sind erforderlich" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Fehlende Daten" }, { status: 400 });
     }
-
-    await redis.set(tvNameKey(userId), nickname);
-
-    await notifyTvName({
-      userId,
-      companyId,
-      tvName: nickname,
-      billingReason: "manual_update",
-    });
-
+    await notifyTvName({ userId, companyId, newName: nickname });
     return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("Fehler beim Speichern des TradingView-Namens:", error);
-    return NextResponse.json({ error: "Interner Serverfehler" }, { status: 500 });
+  } catch (e) {
+    console.error("Fehler in /api/nickname:", e);
+    return NextResponse.json({ error: "Serverfehler" }, { status: 500 });
   }
 }
