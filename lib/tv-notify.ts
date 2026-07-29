@@ -1,54 +1,69 @@
+import { Redis } from "@upstash/redis";
 import { whopsdk } from "@/lib/whop-sdk";
-import { redis, tvNameKey } from "@/lib/redis";
-import { sendDiscordMessage } from "@/lib/discord";
+import { sendDiscordEmbed } from "./discord";
 
-const TV_QUESTION_TEXT = "Dein TradingView-Benutzername";
+const redis = Redis.fromEnv();
 
-type PaymentInfo = { amount: number; currency: string };
+export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
 
-async function getUserBasicInfo(userId: string) {
-  let username = "unbekannt";
-  let name = "unbekannt";
+export type PaymentInfo = {
+  amount: number;
+  currency: string;
+};
+
+const COLORS = {
+  neu: 3066993,           // grün – Neue Mitgliedschaft
+  verlaengerung: 3447003, // blau – Erfolgreiche Verlängerung
+  neuerName: 1752220,     // türkis – Neuer TV-Name
+  geaendert: 15105570,    // orange – TV-Name geändert
+  fallback: 15844367,     // gold – Zahlung erhalten
+};
+
+export async function getUserBasicInfo(userId: string) {
   try {
     const user = await whopsdk.users.retrieve(userId);
-    username = user.username ?? "unbekannt";
-    name = user.name ?? "unbekannt";
+    return { name: user.name ?? null, username: user.username ?? null };
   } catch (e) {
-    console.error("Fehler beim Laden des Nutzers:", e);
+    console.error("getUserBasicInfo fehlgeschlagen:", e);
+    return { name: null, username: null };
   }
-  return { username, name };
 }
 
-async function getMembershipDetails(userId: string, companyId: string) {
-  let email = "unbekannt";
-  let produkt = "unbekannt";
-  let zyklus = "unbekannt";
-  let status: string | null = null;
-
+export async function getMembershipDetails(userId: string, companyId: string) {
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
-      user_ids: [userId],
+      user_id: userId,
       first: 1,
-    });
-    const membership = memberships.data[0];
-    if (membership) {
-      email = (membership.user as any)?.email ?? "unbekannt";
-      produkt = membership.product?.title ?? "unbekannt";
-      zyklus = (membership as any).formatted_renewal_price ?? "unbekannt";
-      status = membership.status ?? null;
-    }
-  } catch (e: any) {
-    console.error("Fehler beim Laden der Mitgliedschaft:", e);
-  }
+    } as any);
 
-  return { email, produkt, zyklus, status };
+    const membership = memberships.data[0];
+    if (!membership) {
+      return { email: null, produkt: null, zyklus: null, status: null };
+    }
+
+    const email = (membership as any).email ?? (membership as any).user?.email ?? null;
+    const produkt =
+      (membership as any).product?.title ??
+      (membership as any).plan?.product?.title ??
+      null;
+    const zyklus =
+      (membership as any).plan?.billing_period != null
+        ? `${(membership as any).plan.billing_period} Tage`
+        : (membership as any).plan?.plan_type ?? null;
+    const status = membership.status ?? null;
+
+    return { email, produkt, zyklus, status };
+  } catch (e) {
+    console.error("getMembershipDetails fehlgeschlagen:", e);
+    return { email: null, produkt: null, zyklus: null, status: null };
+  }
 }
 
-async function getLastPaymentDate(
+export async function getLastPaymentDate(
   userId: string,
   companyId: string,
-  membershipStatus: string | null
+  status?: string | null
 ): Promise<string> {
   try {
     const payments = await whopsdk.payments.list({
@@ -58,129 +73,126 @@ async function getLastPaymentDate(
       order: "paid_at",
       direction: "desc",
       first: 1,
-    });
-    const payment = payments.data[0];
-    if (payment?.paid_at) {
-      return new Intl.DateTimeFormat("de-DE", {
-        dateStyle: "medium",
-        timeStyle: "short",
-        timeZone: "Europe/Berlin",
-      }).format(new Date(payment.paid_at));
-    }
-  } catch (e) {
-    console.error("Fehler beim Laden der letzten Zahlung:", e);
-  }
+    } as any);
 
-  if (membershipStatus === "trialing") {
-    return "Noch keine Zahlung – aktuell im Trial";
+    const lastPayment = payments.data[0];
+
+    if (!lastPayment) {
+      if (status === "trialing") {
+        return "Noch keine Zahlung – aktuell im Trial";
+      }
+      return "Keine Zahlung gefunden";
+    }
+
+    const paidAt = (lastPayment as any).paid_at ?? lastPayment.created_at;
+    return new Intl.DateTimeFormat("de-DE", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "Europe/Berlin",
+    }).format(new Date(paidAt));
+  } catch (e) {
+    console.error("getLastPaymentDate fehlgeschlagen:", e);
+    return "Keine Zahlung gefunden";
   }
-  return "Keine Zahlung gefunden";
 }
 
-function statusTag(status: string | null): string {
-  if (status === "trialing") return "🆕 Erstkunde (aktuell im 10-Tage-Trial)";
-  if (status) return "🔁 Bestandskunde (normale Zahlung, kein Trial)";
-  return "";
+export function statusTag(status: string | null): string {
+  if (status === "trialing") {
+    return "🆕 Erstkunde (im Trial)";
+  }
+  return "🔁 Bestandskunde";
 }
 
 export function extractTvNameFromMembership(membership: any): string | null {
-  const answer = membership?.custom_field_responses?.find(
-    (r: any) => r.question?.trim() === TV_QUESTION_TEXT
-  );
-  return answer?.answer ?? null;
+  const metadata = membership?.metadata ?? membership?.custom_field_responses ?? null;
+  if (!metadata) return null;
+  return metadata.tv_name ?? metadata.tradingview_name ?? metadata.tvName ?? null;
 }
 
-export async function notifyTvName(params: {
+export async function notifyTvName({
+  userId,
+  companyId,
+  newName,
+  payment,
+  billingReason,
+}: {
   userId: string;
   companyId: string;
   newName: string | null;
   payment?: PaymentInfo | null;
   billingReason?: string | null;
 }) {
-  const { userId, companyId, newName, payment, billingReason } = params;
-  if (!newName && !payment) return;
-
-  const oldName = await redis.get<string>(tvNameKey(userId));
-  const effectiveName = newName ?? oldName;
-  if (!effectiveName) return;
+  const redisKey = `tvname:${userId}`;
+  const oldName = await redis.get<string>(redisKey);
 
   const isNew = !!newName && !oldName;
-  const isChanged = !!newName && !!oldName && oldName !== newName;
+  const isChanged = !!newName && !!oldName && newName !== oldName;
 
-  if (isNew || isChanged) {
-    await redis.set(tvNameKey(userId), newName as string);
+  // Kein neuer Name und auch kein alter gespeichert -> keine Nachricht senden
+  if (!newName && !oldName) {
+    return;
   }
 
-  if (!isNew && !isChanged && !payment) return;
+  if (newName && (isNew || isChanged)) {
+    await redis.set(redisKey, newName);
+  }
 
-  const { username, name } = await getUserBasicInfo(userId);
-  const { email, produkt, zyklus, status } = await getMembershipDetails(userId, companyId);
+  const nameToShow = newName ?? oldName;
 
-  const lastPaymentInfo = isChanged
-    ? await getLastPaymentDate(userId, companyId, status)
-    : null;
-
-  let icon = "💰";
+  let icon = "💳";
   let title = "Zahlung erhalten";
+  let color = COLORS.fallback;
 
-  if (payment && billingReason === "subscription_create") {
+  if (billingReason === "subscription_create") {
     icon = "🆕";
     title = "Neue Mitgliedschaft";
-  } else if (payment && billingReason === "subscription_cycle") {
+    color = COLORS.neu;
+  } else if (billingReason === "subscription_cycle") {
     icon = "🔄";
     title = "Erfolgreiche Verlängerung";
-  } else if (isNew) {
-    icon = "🆕";
-    title = "Neuer TradingView-Name eingetragen";
+    color = COLORS.verlaengerung;
   } else if (isChanged) {
     icon = "✏️";
-    title = "TradingView-Name geändert";
+    title = "TV-Name geändert";
+    color = COLORS.geaendert;
+  } else if (isNew) {
+    icon = "📈";
+    title = "Neuer TV-Name";
+    color = COLORS.neuerName;
   }
 
-  // Farbe je nach Ereignis-Typ
-  let color = 3447003; // blau (default: Zahlung)
-  if (payment && billingReason === "subscription_create") color = 3066993; // grün
-  else if (isNew) color = 3066993; // grün
-  else if (isChanged) color = 15844367; // gelb/orange
-
-  const descriptionLines: string[] = [];
-  descriptionLines.push(`👤 Whop-Nutzer: ${username} (${name})`);
-  descriptionLines.push(`📧 E-Mail: ${email}`);
-  descriptionLines.push(`📦 Produkt: ${produkt}`);
-  descriptionLines.push(`🔁 Abo-Zyklus: ${zyklus}`);
-  if (isChanged && lastPaymentInfo) {
-    descriptionLines.push(`🗓️ Letzte Zahlung: ${lastPaymentInfo}`);
-  }
-  if (payment) {
-    descriptionLines.push(`💵 Betrag: ${payment.amount} ${payment.currency.toUpperCase()}`);
-  }
-  const tag = statusTag(status);
-  if (tag) descriptionLines.push(tag);
+  const { email, produkt, zyklus, status } = await getMembershipDetails(userId, companyId);
 
   const fields: { name: string; value: string; inline?: boolean }[] = [];
 
-  if (isChanged) {
+  if (email) fields.push({ name: "📧 E-Mail", value: email, inline: true });
+  if (produkt) fields.push({ name: "📦 Produkt", value: produkt, inline: true });
+  if (zyklus) fields.push({ name: "🔁 Zyklus", value: zyklus, inline: true });
+  fields.push({ name: "📌 Status", value: statusTag(status), inline: true });
+
+  if (payment) {
     fields.push({
-      name: "📈 TradingView-Name (alt)",
-      value: `\`\`\`${oldName}\`\`\``,
-      inline: false,
-    });
-    fields.push({
-      name: "📈 TradingView-Name (neu)",
-      value: `\`\`\`${newName}\`\`\``,
-      inline: false,
-    });
-  } else {
-    fields.push({
-      name: "📈 TradingView-Name",
-      value: `\`\`\`${effectiveName}\`\`\``,
-      inline: false,
+      name: "💰 Zahlung",
+      value: `${payment.amount} ${payment.currency.toUpperCase()}`,
+      inline: true,
     });
   }
 
-  await sendDiscordMessage(null, {
+  if (isChanged) {
+    const lastPaymentInfo = await getLastPaymentDate(userId, companyId, status);
+    fields.push({ name: "🕓 Letzte Zahlung", value: lastPaymentInfo });
+  }
+
+  // TV-Name immer als letztes, eigenes Feld — leicht zu markieren/kopieren
+  if (nameToShow) {
+    fields.push({
+      name: "📈 TradingView-Name",
+      value: "```\n" + nameToShow + "\n```",
+    });
+  }
+
+  await sendDiscordEmbed({
     title: `${icon} ${title}`,
-    description: descriptionLines.join("\n"),
     color,
     fields,
   });
