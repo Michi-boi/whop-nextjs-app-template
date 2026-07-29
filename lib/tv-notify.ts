@@ -1,122 +1,158 @@
 import { whopsdk } from "@/lib/whop-sdk";
 
-// Die Frage aus dem Checkout-Formular
-export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
-
+const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa";
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL!;
 
-const COLORS = {
-  neu: 0x22c55e,      // grün – neuer Kauf / neuer Trial
-  update: 0x3b82f6,   // blau – Name in der App geändert
-  standard: 0x9ca3af, // grau – normale Verlängerung
-};
+const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
 
-// Rechnet aus, wie viele Tage bis zu einem Datum noch übrig sind
-export function daysUntil(dateStr: string | null): number | null {
+export type BillingReason =
+  | "trial_started"
+  | "subscription_create"
+  | "subscription_cycle"
+  | "manual_update";
+
+interface NotifyTvNameParams {
+  userId: string;
+  companyId: string;
+  tvName: string;
+  billingReason: BillingReason;
+  paymentAmount?: number; // nur bei echten Zahlungen mitgeben
+  paymentCurrency?: string; // z.B. "eur"
+}
+
+interface MembershipContext {
+  username: string;
+  displayName: string | null;
+  email: string | null;
+  productTitle: string | null;
+  formattedRenewalPrice: string | null;
+  status: string | null;
+  renewalPeriodEnd: string | null;
+}
+
+/** Liest den TradingView-Namen aus der Checkout-Frage einer Mitgliedschaft aus. */
+export function extractTvNameFromMembership(membership: {
+  custom_field_responses?: { question: string; answer: string }[];
+}): string | null {
+  const match = membership.custom_field_responses?.find(
+    (r) => r.question === TV_QUESTION_TEXT
+  );
+  return match?.answer ?? null;
+}
+
+function daysUntil(dateStr: string | null): number | null {
   if (!dateStr) return null;
   const diffMs = new Date(dateStr).getTime() - Date.now();
   if (diffMs <= 0) return 0;
   return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 }
 
-// Holt Status + Trial-Ende direkt von Whop
-export async function getMembershipDetails(membershipId: string) {
-  const membership = await whopsdk.memberships.retrieve(membershipId);
+/**
+ * Findet automatisch die passende Mitgliedschaft für einen Nutzer
+ * (in dieser Firma, für dieses Produkt) und liefert alle Infos,
+ * die für die Discord-Nachricht gebraucht werden.
+ */
+async function getMembershipContext(
+  userId: string,
+  companyId: string
+): Promise<MembershipContext> {
+  const page = await whopsdk.memberships.list({
+    company_id: companyId,
+    user_ids: [userId],
+    product_ids: [ALLOWED_PRODUCT_ID],
+    first: 1,
+    order: "created_at",
+    direction: "desc",
+  });
+
+  const membership = page.data[0];
+
+  if (!membership) {
+    return {
+      username: userId,
+      displayName: null,
+      email: null,
+      productTitle: null,
+      formattedRenewalPrice: null,
+      status: null,
+      renewalPeriodEnd: null,
+    };
+  }
+
   return {
-    status: membership.status,
-    trialEndsAt: membership.renewal_period_end,
+    username: membership.user?.username ?? userId,
+    displayName: membership.user?.name ?? null,
+    email: membership.user?.email ?? null,
+    productTitle: membership.product?.title ?? null,
+    formattedRenewalPrice: membership.formatted_renewal_price ?? null,
+    status: membership.status ?? null,
+    renewalPeriodEnd: membership.renewal_period_end ?? null,
   };
 }
 
-// Liest den TradingView-Namen aus den Checkout-Antworten heraus.
-// Funktioniert sowohl für ein Membership-Objekt als auch für ein Payment-Objekt,
-// da beide ein "custom_field_responses"-Feld im gleichen Format haben.
-export function extractTvNameFromMembership(record: any): string | null {
-  const question = record?.custom_field_responses?.find(
-    (q: any) => q.question === TV_QUESTION_TEXT
-  );
-  return question?.answer ?? null;
+function statusLabel(
+  status: string | null,
+  billingReason: BillingReason
+): string {
+  if (billingReason === "trial_started") return "🆕 Erstkunde (im Trial)";
+  if (billingReason === "subscription_create") return "🆕 Erstkunde";
+  if (billingReason === "subscription_cycle") return "💳 Bestandskunde";
+
+  // manual_update -> Status direkt von der Mitgliedschaft ableiten
+  switch (status) {
+    case "trialing":
+      return "🆕 Erstkunde (im Trial)";
+    case "active":
+      return "💳 Bestandskunde";
+    case "past_due":
+      return "⚠️ Zahlung überfällig";
+    case "canceling":
+      return "🚪 Kündigung angekündigt";
+    case "canceled":
+      return "❌ Gekündigt";
+    case "expired":
+      return "⏰ Abgelaufen";
+    default:
+      return status ? `ℹ️ ${status}` : "ℹ️ Unbekannt";
+  }
 }
 
-type NotifyParams = {
-  userId: string;
-  username: string;
-  tvName: string;
-  // Optional: nur nötig, wenn wir Trial-/Status-Infos anzeigen wollen
-  // (z.B. bei einer manuellen Namensänderung in der App gibt es das nicht)
-  membershipId?: string;
-  billingReason:
-    | "trial_started"
-    | "subscription_create"
-    | "subscription_cycle"
-    | "manual_update";
-};
+export async function notifyTvName(params: NotifyTvNameParams): Promise<void> {
+  const { userId, companyId, tvName, billingReason, paymentAmount, paymentCurrency } =
+    params;
 
-export async function notifyTvName({
-  userId,
-  username,
-  tvName,
-  membershipId,
-  billingReason,
-}: NotifyParams) {
-  let status: string | null = null;
-  let trialEndsAt: string | null = null;
+  if (!DISCORD_WEBHOOK_URL) return;
 
-  if (membershipId) {
-    const details = await getMembershipDetails(membershipId);
-    status = details.status;
-    trialEndsAt = details.trialEndsAt;
+  const ctx = await getMembershipContext(userId, companyId);
+
+  const lines: string[] = [];
+
+  lines.push(
+    `👤 Whop-Nutzer: ${ctx.username}${ctx.displayName ? ` (${ctx.displayName})` : ""}`
+  );
+  if (ctx.email) lines.push(`📧 E-Mail: ${ctx.email}`);
+  if (ctx.productTitle) lines.push(`📦 Produkt: ${ctx.productTitle}`);
+  if (ctx.formattedRenewalPrice)
+    lines.push(`🔁 Abo-Zyklus: ${ctx.formattedRenewalPrice}`);
+
+  // Nur anzeigen, wenn wirklich ein Betrag vorliegt (behebt den "undefined"-Bug)
+  if (paymentAmount !== undefined && paymentAmount !== null && paymentCurrency) {
+    lines.push(
+      `💵 Zahlung: ${paymentAmount.toFixed(2)} ${paymentCurrency.toUpperCase()}`
+    );
   }
 
-  let icon = "🔄";
-  let title = "TradingView-Name aktualisiert";
-  let color = COLORS.standard;
+  lines.push(`📈 TradingView-Name: ${tvName}`);
+  lines.push(`📌 Status: ${statusLabel(ctx.status, billingReason)}`);
 
-  // WICHTIG: dieser Zweig muss VOR "subscription_create" stehen
-  if (billingReason === "trial_started") {
-    icon = "🆕";
-    title = "Trial gestartet";
-    color = COLORS.neu;
-  } else if (billingReason === "subscription_create") {
-    icon = "🆕";
-    title = "Neue Zahlung eingegangen";
-    color = COLORS.neu;
-  } else if (billingReason === "subscription_cycle") {
-    icon = "💳";
-    title = "Verlängerung eingegangen";
-    color = COLORS.standard;
-  } else if (billingReason === "manual_update") {
-    icon = "✏️";
-    title = "Name in der App geändert";
-    color = COLORS.update;
-  }
-
-  const fields: { name: string; value: string; inline: boolean }[] = [
-    { name: "👤 Nutzer", value: username, inline: true },
-    { name: "📈 TradingView-Name", value: tvName || "-", inline: true },
-  ];
-
-  if (status === "trialing") {
-    const days = daysUntil(trialEndsAt);
-    fields.push({
-      name: "🧪 Test-Phase endet in",
-      value: days !== null ? `${days} Tag(e)` : "unbekannt",
-      inline: true,
-    });
+  const trialDays = daysUntil(ctx.renewalPeriodEnd);
+  if (ctx.status === "trialing" && trialDays !== null) {
+    lines.push(`🧪 Test-Phase endet in: ${trialDays} Tagen`);
   }
 
   await fetch(DISCORD_WEBHOOK_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      embeds: [
-        {
-          title: `${icon} ${title}`,
-          color,
-          fields,
-          timestamp: new Date().toISOString(),
-        },
-      ],
-    }),
+    body: JSON.stringify({ content: lines.join("\n") }),
   });
 }
