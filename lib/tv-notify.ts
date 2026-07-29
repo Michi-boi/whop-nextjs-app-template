@@ -1,163 +1,325 @@
+import { NextRequest, NextResponse } from "next/server";
 import { whopsdk } from "@/lib/whop-sdk";
+import { notifyTvName, extractTvNameFromMembership } from "@/lib/tv-notify";
+import { notifyChurn } from "@/lib/churn-notify";
+import { redis, tvNameKey } from "@/lib/redis";
 
-const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa";
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL!;
+export async function POST(req: NextRequest) {
+  const body = await req.text();
+  const event = JSON.parse(body);
 
-const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
+  if (event.type === "payment.succeeded") {
+    try {
+      const payment = event.data;
+      const membershipId = payment.membership?.id;
+      const userId = payment.user?.id ?? payment.user_id;
+      const companyId = payment.company?.id ?? payment.company_id;
 
-export type BillingReason =
-  | "trial_started"
-  | "subscription_create"
-  | "subscription_cycle"
-  | "manual_update";
+      if (!userId || !companyId) {
+        console.error("payment.succeeded: userId oder companyId fehlt", payment.id);
+        return NextResponse.json({ received: true });
+      }
 
-interface NotifyTvNameParams {
+      const billingReason = payment.billing_reason ?? null;
+
+      // WICHTIG: Der Checkout-Name darf NUR bei einem echten Neukauf zählen
+      // (Erstkauf oder Neubuchung nach Kündigung). Bei einer normalen
+      // Verlängerung (subscription_cycle) bleibt ein später in der App
+      // geänderter Name unangetastet.
+      const isNewMembership = billingReason === "subscription_create";
+
+      let tvNameFromCheckout: string | null = null;
+
+      if (isNewMembership && membershipId) {
+        try {
+          const membership = await whopsdk.memberships.retrieve(membershipId);
+          tvNameFromCheckout = extractTvNameFromMembership(membership);
+        } catch (e) {
+          console.error("Fehler beim Laden der Mitgliedschaft:", e);
+        }
+      }
+
+      const paymentInfo = {
+        amount: payment.final_amount ?? payment.amount,
+        currency: payment.currency,
+      };
+
+      if (tvNameFromCheckout) {
+        await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, payment: paymentInfo, billingReason });
+      } else {
+        const existing = await redis.get<string>(tvNameKey(userId));
+        if (existing) {
+          await notifyTvName({ userId, companyId, newName: null, payment: paymentInfo, billingReason });
+        }
+      }
+    } catch (e) {
+      console.error("Fehler bei payment.succeeded Verarbeitung:", e);
+    }
+  }
+
+  if (event.type === "membership.deactivated") {
+    try {
+      await notifyChurn(event.data);
+    } catch (e) {
+      console.error("Fehler bei membership.deactivated Verarbeitung:", e);
+    }
+  }
+
+  return NextResponse.json({ received: true });
+}
+
+und der andere:
+import { Redis } from "@upstash/redis";
+import { whopsdk } from "@/lib/whop-sdk";
+import { sendDiscordEmbed } from "./discord";
+
+const redis = Redis.fromEnv();
+
+export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
+
+const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa"; // Seasonality Scanner Indikator
+
+export type PaymentInfo = {
+  amount: number;
+  currency: string;
+};
+
+const COLORS = {
+  neu: 3066993,
+  verlaengerung: 3447003,
+  neuerName: 1752220,
+  geaendert: 15105570,
+  fallback: 15844367,
+};
+
+function tvNameKey(userId: string) {
+  return `tvname:${userId}`;
+}
+
+// NEU: Rechnet aus, wie viele Tage bis zu einem Datum verbleiben (min. 0)
+function daysUntil(dateStr: string): number {
+  const ms = new Date(dateStr).getTime() - Date.now();
+  return Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
+}
+
+export async function getUserBasicInfo(userId: string) {
+  try {
+    const user = await whopsdk.users.retrieve(userId);
+    return { name: user.name ?? null, username: user.username ?? null };
+  } catch (e) {
+    console.error("getUserBasicInfo fehlgeschlagen:", e);
+    return { name: null, username: null };
+  }
+}
+
+export async function getMembershipDetails(userId: string, companyId: string, productId?: string) {
+  try {
+    const memberships = await whopsdk.memberships.list({
+      company_id: companyId,
+      user_ids: [userId],
+      first: 10,
+    } as any);
+
+    let membership: any = null;
+
+    if (productId) {
+      const matches = memberships.data.filter((m: any) => m.product?.id === productId);
+      membership = matches.find((m: any) => m.status === "active" || m.status === "trialing") ?? matches[0] ?? null;
+    } else {
+      membership = memberships.data[0] ?? null;
+    }
+
+    if (!membership) {
+      return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
+    }
+
+    return {
+      username: membership.user?.username ?? null,
+      name: membership.user?.name ?? null,
+      email: membership.user?.email ?? null,
+      produkt: membership.product?.title ?? null,
+      produkt_id: membership.product?.id ?? null,
+      zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
+      status: membership.status ?? null,
+      // NEU: Ende der aktuellen Periode (bei Trial = Trial-Ende)
+      trialEndsAt: membership.renewal_period_end ?? null,
+    };
+  } catch (e) {
+    console.error("getMembershipDetails fehlgeschlagen:", e);
+    return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
+  }
+}
+
+export async function getLastPaymentDate(
+  userId: string,
+  companyId: string,
+  status?: string | null
+): Promise<string> {
+  try {
+    const payments = await whopsdk.payments.list({
+      company_id: companyId,
+      query: userId,
+      statuses: ["paid"],
+      order: "paid_at",
+      direction: "desc",
+      first: 1,
+    } as any);
+
+    const lastPayment: any = payments.data[0];
+
+    if (!lastPayment) {
+      if (status === "trialing") {
+        return "Noch keine Zahlung – aktuell im Trial";
+      }
+      return "Keine Zahlung gefunden";
+    }
+
+    const paidAt = lastPayment.paid_at ?? lastPayment.created_at;
+    return new Intl.DateTimeFormat("de-DE", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "Europe/Berlin",
+    }).format(new Date(paidAt));
+  } catch (e) {
+    console.error("getLastPaymentDate fehlgeschlagen:", e);
+    return "Keine Zahlung gefunden";
+  }
+}
+
+export function statusTag(status: string | null): string {
+  if (status === "trialing") {
+    return "🆕 Erstkunde (im Trial)";
+  }
+  return "🔁 Bestandskunde (normale Zahlung, kein Trial)";
+}
+
+export function extractTvNameFromMembership(membership: any): string | null {
+  const answer = membership?.custom_field_responses?.find(
+    (r: any) => r.question?.trim() === TV_QUESTION_TEXT
+  );
+  return answer?.answer ?? null;
+}
+
+export async function notifyTvName({
+  userId,
+  companyId,
+  newName,
+  payment,
+  billingReason,
+}: {
   userId: string;
   companyId: string;
-  tvName: string;
-  billingReason: BillingReason;
-  paymentAmount?: number; // nur bei echten Zahlungen mitgeben
-  paymentCurrency?: string; // z.B. "eur"
-}
-
-interface MembershipContext {
-  username: string;
-  displayName: string | null;
-  email: string | null;
-  productTitle: string | null;
-  formattedRenewalPrice: string | null;
-  status: string | null;
-  renewalPeriodEnd: string | null;
-}
-
-/** Liest den TradingView-Namen aus der Checkout-Frage einer Mitgliedschaft aus. */
-export function extractTvNameFromMembership(membership: {
-  custom_field_responses?: { question: string; answer: string }[];
-}): string | null {
-  const match = membership.custom_field_responses?.find(
-    (r) => r.question === TV_QUESTION_TEXT
-  );
-  return match?.answer ?? null;
-}
-
-function daysUntil(dateStr: string | null): number | null {
-  if (!dateStr) return null;
-  const diffMs = new Date(dateStr).getTime() - Date.now();
-  if (diffMs <= 0) return 0;
-  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-}
-
-/**
- * Findet automatisch die passende Mitgliedschaft für einen Nutzer
- * (in dieser Firma, für dieses Produkt) und liefert alle Infos,
- * die für die Discord-Nachricht gebraucht werden.
- */
-
-async function getMembershipContext(
-  userId: string,
-  companyId: string
-): Promise<MembershipContext> {
-  const listPage = await whopsdk.memberships.list({
-    company_id: companyId,
-    user_ids: [userId],
-    first: 10,
-  });
-
-  // Passende Mitgliedschaft für unser Produkt finden
-  const summary = listPage.data.find((m) => m.product?.id === ALLOWED_PRODUCT_ID);
-
-  if (!summary) {
-    return {
-      username: userId,
-      displayName: null,
-      email: null,
-      productTitle: null,
-      formattedRenewalPrice: null,
-      status: null,
-      renewalPeriodEnd: null,
-    };
+  newName: string | null;
+  payment?: PaymentInfo | null;
+  billingReason?: string | null;
+}) {
+  const membershipDetails = await getMembershipDetails(userId, companyId, ALLOWED_PRODUCT_ID);
+  if (membershipDetails.produkt_id !== ALLOWED_PRODUCT_ID) {
+    return;
   }
 
-  // Volle Details (inkl. E-Mail) über retrieveMembership nachladen -
-  // die Liste liefert einen abgespeckten Nutzer-Typ ohne E-Mail-Feld.
-  const membership = await whopsdk.memberships.retrieve(summary.id);
+  const oldName = await redis.get<string>(tvNameKey(userId));
 
-  return {
-    username: membership.user?.username ?? userId,
-    displayName: membership.user?.name ?? null,
-    email: (membership.user as { email?: string | null } | null)?.email ?? null,
-    productTitle: membership.product?.title ?? null,
-    formattedRenewalPrice: membership.formatted_renewal_price ?? null,
-    status: membership.status ?? null,
-    renewalPeriodEnd: membership.renewal_period_end ?? null,
-  };
+  const isNew = !!newName && !oldName;
+  const isChanged = !!newName && !!oldName && newName !== oldName;
 
-
-
-
-function statusLabel(
-  status: string | null,
-  billingReason: BillingReason
-): string {
-  if (billingReason === "trial_started") return "🆕 Erstkunde (im Trial)";
-  if (billingReason === "subscription_create") return "🆕 Erstkunde";
-  if (billingReason === "subscription_cycle") return "💳 Bestandskunde";
-
-  // manual_update -> Status direkt von der Mitgliedschaft ableiten
-  switch (status) {
-    case "trialing":
-      return "🆕 Erstkunde (im Trial)";
-    case "active":
-      return "💳 Bestandskunde";
-    case "past_due":
-      return "⚠️ Zahlung überfällig";
-    case "canceling":
-      return "🚪 Kündigung angekündigt";
-    case "canceled":
-      return "❌ Gekündigt";
-    case "expired":
-      return "⏰ Abgelaufen";
-    default:
-      return status ? `ℹ️ ${status}` : "ℹ️ Unbekannt";
-  }
-}
-
-export async function notifyTvName(params: NotifyTvNameParams): Promise<void> {
-  const { userId, companyId, tvName, billingReason, paymentAmount, paymentCurrency } =
-    params;
-
-  if (!DISCORD_WEBHOOK_URL) return;
-
-  const ctx = await getMembershipContext(userId, companyId);
-
-  const lines: string[] = [];
-
-  lines.push(
-    `👤 Whop-Nutzer: ${ctx.username}${ctx.displayName ? ` (${ctx.displayName})` : ""}`
-  );
-  if (ctx.email) lines.push(`📧 E-Mail: ${ctx.email}`);
-  if (ctx.productTitle) lines.push(`📦 Produkt: ${ctx.productTitle}`);
-  if (ctx.formattedRenewalPrice)
-    lines.push(`🔁 Abo-Zyklus: ${ctx.formattedRenewalPrice}`);
-
-  // Nur anzeigen, wenn wirklich ein Betrag vorliegt (behebt den "undefined"-Bug)
-  if (paymentAmount !== undefined && paymentAmount !== null && paymentCurrency) {
-    lines.push(
-      `💵 Zahlung: ${paymentAmount.toFixed(2)} ${paymentCurrency.toUpperCase()}`
-    );
+  const nameUnchanged = !!newName && !isNew && !isChanged;
+  if (nameUnchanged && !payment) {
+    return;
   }
 
-  lines.push(`📈 TradingView-Name: ${tvName}`);
-  lines.push(`📌 Status: ${statusLabel(ctx.status, billingReason)}`);
+  const nameToShow = newName ?? oldName;
 
-  const trialDays = daysUntil(ctx.renewalPeriodEnd);
-  if (ctx.status === "trialing" && trialDays !== null) {
-    lines.push(`🧪 Test-Phase endet in: ${trialDays} Tagen`);
+  if (!nameToShow && !payment) return;
+
+  if (newName && (isNew || isChanged)) {
+    await redis.set(tvNameKey(userId), newName);
   }
 
-  await fetch(DISCORD_WEBHOOK_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: lines.join("\n") }),
+  let icon = "💰";
+  let title = "Zahlung erhalten";
+  let color = COLORS.fallback;
+
+  if (payment && billingReason === "subscription_create") {
+    icon = "🆕";
+    title = "Neue Mitgliedschaft";
+    color = COLORS.neu;
+  } else if (payment && billingReason === "subscription_cycle") {
+    icon = "🔄";
+    title = "Erfolgreiche Verlängerung";
+    color = COLORS.verlaengerung;
+  } else if (isChanged) {
+    icon = "✏️";
+    title = "TV-Name geändert";
+    color = COLORS.geaendert;
+  } else if (isNew) {
+    icon = "📈";
+    title = "Neuer TV-Name";
+    color = COLORS.neuerName;
+  }
+
+  const { username, name, email, produkt, zyklus, status, trialEndsAt } = membershipDetails;
+
+  const fields: { name: string; value: string; inline?: boolean }[] = [];
+
+  if (username) {
+    fields.push({
+      name: "👤 Whop-Nutzer",
+      value: name ? `${username} (${name})` : username,
+      inline: true,
+    });
+  }
+  if (email) fields.push({ name: "📧 E-Mail", value: email, inline: true });
+  if (produkt) fields.push({ name: "📦 Produkt", value: produkt, inline: true });
+  if (zyklus) fields.push({ name: "🔁 Abo-Zyklus", value: zyklus, inline: true });
+
+  if (payment) {
+    fields.push({
+      name: "💵 Zahlung",
+      value: `${payment.amount} ${payment.currency.toUpperCase()}`,
+      inline: true,
+    });
+  }
+
+  if (isChanged) {
+    fields.push({ name: "📈 Bisheriger Name", value: oldName as string, inline: true });
+  }
+
+  // NEU: Letzte Zahlung wird jetzt auch angezeigt, wenn der Name zum ersten Mal
+  // eingetragen wird (z.B. Bestandskunde, der zum ersten Mal seinen TV-Namen einträgt)
+  if (isChanged || isNew) {
+    const lastPaymentInfo = await getLastPaymentDate(userId, companyId, status);
+    fields.push({ name: "🗓️ Letzte Zahlung", value: lastPaymentInfo });
+  }
+
+  if (nameToShow) {
+    fields.push({
+      name: isChanged ? "📈 Neuer TradingView-Name" : "📈 TradingView-Name",
+      value: nameToShow,
+    });
+  }
+
+  fields.push({ name: "📌 Status", value: statusTag(status) });
+
+  // NEU: Bei einer laufenden Testversion zusätzlich anzeigen, wie viele Tage sie noch offen ist
+  if (status === "trialing" && trialEndsAt) {
+    const days = daysUntil(trialEndsAt);
+    fields.push({
+      name: "🧪 Test-Phase endet in",
+      value: `${days} Tag${days === 1 ? "" : "en"}`,
+      inline: true,
+    });
+  }
+
+  await sendDiscordEmbed({
+    title: `${icon} ${title}`,
+    color,
+    fields,
   });
 }
+
+
+
+
+
+
