@@ -37,7 +37,7 @@ export async function getMembershipDetails(userId: string, companyId: string) {
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
-      user_id: userId,
+      user_ids: [userId],   // ← geändert von user_id zu user_ids: [userId]
       first: 1,
     } as any);
 
