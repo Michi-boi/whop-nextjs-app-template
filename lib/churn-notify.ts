@@ -1,7 +1,14 @@
+import { Redis } from "@upstash/redis";
 import { sendDiscordEmbedTo } from "@/lib/discord";
+
+const redis = Redis.fromEnv();
 
 const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa"; // Seasonality Scanner Indikator
 const CHURN_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL_CHURN!;
+
+function tvNameKey(userId: string) {
+  return `tvname:${userId}`;
+}
 
 const CANCEL_OPTION_LABELS: Record<string, string> = {
   too_expensive: "Zu teuer",
@@ -20,6 +27,10 @@ export async function notifyChurn(membership: any) {
   }
 
   const user = membership?.user;
+  const userId = user?.id;
+
+  // TradingView-Namen aus Redis holen (falls hinterlegt)
+  const tvName = userId ? await redis.get<string>(tvNameKey(userId)) : null;
 
   const fields: { name: string; value: string; inline?: boolean }[] = [
     {
@@ -30,6 +41,11 @@ export async function notifyChurn(membership: any) {
     {
       name: "📧 E-Mail",
       value: user?.email || "Unbekannt",
+      inline: true,
+    },
+    {
+      name: "📈 TradingView-Name",
+      value: tvName || "Nicht hinterlegt",
       inline: true,
     },
     {
