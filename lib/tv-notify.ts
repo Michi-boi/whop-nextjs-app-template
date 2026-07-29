@@ -6,7 +6,7 @@ const redis = Redis.fromEnv();
 
 export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
 
-// NEU: Nur bei diesem Produkt soll überhaupt eine Discord-Nachricht gesendet werden
+// Nur bei diesem Produkt soll überhaupt eine Discord-Nachricht gesendet werden
 const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa"; // Seasonality Scanner Indikator
 
 export type PaymentInfo = {
@@ -36,15 +36,25 @@ export async function getUserBasicInfo(userId: string) {
   }
 }
 
-export async function getMembershipDetails(userId: string, companyId: string) {
+export async function getMembershipDetails(userId: string, companyId: string, productId?: string) {
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
       user_ids: [userId],
-      first: 1,
+      first: 10, // mehr laden, falls der User mehrere Mitgliedschaften hat (z.B. Gratis-Kurs + Indikator)
     } as any);
 
-    const membership: any = memberships.data[0];
+    let membership: any = null;
+
+    if (productId) {
+      // Nur Mitgliedschaften mit dem gewünschten Produkt berücksichtigen,
+      // dabei aktive/trialing bevorzugen, falls mehrere existieren
+      const matches = memberships.data.filter((m: any) => m.product?.id === productId);
+      membership = matches.find((m: any) => m.status === "active" || m.status === "trialing") ?? matches[0] ?? null;
+    } else {
+      membership = memberships.data[0] ?? null;
+    }
+
     if (!membership) {
       return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null };
     }
@@ -54,7 +64,7 @@ export async function getMembershipDetails(userId: string, companyId: string) {
       name: membership.user?.name ?? null,
       email: membership.user?.email ?? null,
       produkt: membership.product?.title ?? null,
-      produkt_id: membership.product?.id ?? null, // NEU: für den Produkt-Filter
+      produkt_id: membership.product?.id ?? null,
       // Whop liefert Preis + Intervall bereits fertig formatiert
       zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
       status: membership.status ?? null,
@@ -128,11 +138,13 @@ export async function notifyTvName({
   payment?: PaymentInfo | null;
   billingReason?: string | null;
 }) {
-  // NEU: Mitgliedschaft EINMAL ganz am Anfang holen und Produkt prüfen.
+  // Mitgliedschaft EINMAL ganz am Anfang holen und Produkt prüfen.
   // Nur beim "Seasonality Scanner Indikator" soll überhaupt etwas passieren.
-  const membershipDetails = await getMembershipDetails(userId, companyId);
+  // Wichtig: Produkt-ID wird jetzt mitgegeben, damit bei mehreren Mitgliedschaften
+  // (z.B. Gratis-Kurs + Indikator) gezielt die richtige gefunden wird.
+  const membershipDetails = await getMembershipDetails(userId, companyId, ALLOWED_PRODUCT_ID);
   if (membershipDetails.produkt_id !== ALLOWED_PRODUCT_ID) {
-    return; // z.B. Gratis-Videokurs -> keine Nachricht
+    return; // Kein aktives Indikator-Abo -> keine Nachricht (z.B. nur Gratis-Videokurs)
   }
 
   const oldName = await redis.get<string>(tvNameKey(userId));
