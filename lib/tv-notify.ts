@@ -43,19 +43,23 @@ export async function getUserBasicInfo(userId: string) {
   }
 }
 
+
+
+
+
 export async function getMembershipDetails(userId: string, companyId: string, productId?: string) {
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
       user_ids: [userId],
+      statuses: ["active", "trialing"],
       first: 10,
     } as any);
 
     let membership: any = null;
 
     if (productId) {
-      const matches = memberships.data.filter((m: any) => m.product?.id === productId);
-      membership = matches.find((m: any) => m.status === "active" || m.status === "trialing") ?? matches[0] ?? null;
+      membership = memberships.data.find((m: any) => m.product?.id === productId) ?? null;
     } else {
       membership = memberships.data[0] ?? null;
     }
@@ -72,7 +76,6 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
       produkt_id: membership.product?.id ?? null,
       zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
       status: membership.status ?? null,
-      // NEU: Ende der aktuellen Periode (bei Trial = Trial-Ende)
       trialEndsAt: membership.renewal_period_end ?? null,
     };
   } catch (e) {
@@ -80,6 +83,9 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
     return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
   }
 }
+
+
+
 
 export async function getLastPaymentDate(
   userId: string,
