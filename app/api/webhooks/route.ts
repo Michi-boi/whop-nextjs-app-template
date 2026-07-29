@@ -15,7 +15,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   const headers = Object.fromEntries(request.headers);
   const webhookData = whopsdk.webhooks.unwrap(requestBodyText, { headers });
 
-  // NEU: feuert sofort beim Start einer Mitgliedschaft (auch im Trial, ohne Zahlung)
+  // Feuert sofort beim Start einer Mitgliedschaft (auch im Trial, ohne Zahlung)
   if (webhookData.type === "membership.activated") {
     waitUntil(handleMembershipActivated(webhookData.data));
   }
@@ -37,8 +37,12 @@ async function handleMembershipActivated(membership: any) {
   if (membership.product?.id !== ALLOWED_PRODUCT_ID) return;
 
   const userId = membership.user?.id;
-  const username = membership.user?.username ?? membership.user?.name ?? "unbekannt";
-  if (!userId) return;
+  const companyId = membership.company?.id;
+  if (!userId || !companyId) return;
+
+  // Nur beim Trial-Start feuern - vermeidet doppelte Nachrichten bei
+  // normalen Aktivierungen ohne Trial (die laufen über payment.succeeded).
+  if (membership.status !== "trialing") return;
 
   const checkoutName = extractTvNameFromMembership(membership);
   if (!checkoutName) return;
@@ -47,9 +51,8 @@ async function handleMembershipActivated(membership: any) {
 
   await notifyTvName({
     userId,
-    username,
+    companyId,
     tvName: checkoutName,
-    membershipId: membership.id,
     billingReason: "trial_started",
   });
 }
@@ -62,8 +65,8 @@ async function handlePaymentSucceeded(payment: any) {
   if (payment.product?.id !== ALLOWED_PRODUCT_ID) return;
 
   const userId = payment.member?.user?.id ?? payment.user?.id;
-  const username = payment.member?.user?.username ?? "unbekannt";
-  if (!userId) return;
+  const companyId = payment.company?.id;
+  if (!userId || !companyId) return;
 
   const billingReason = payment.billing_reason;
 
@@ -78,13 +81,14 @@ async function handlePaymentSucceeded(payment: any) {
 
   await notifyTvName({
     userId,
-    username,
+    companyId,
     tvName,
-    membershipId: payment.membership?.id,
     billingReason:
       billingReason === "subscription_create"
         ? "subscription_create"
         : "subscription_cycle",
+    paymentAmount: payment.amount_after_fees,
+    paymentCurrency: payment.currency,
   });
 }
 
