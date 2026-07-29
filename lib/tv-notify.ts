@@ -111,6 +111,8 @@ export function extractTvNameFromMembership(membership: any): string | null {
   return answer?.answer ?? null;
 }
 
+
+
 export async function notifyTvName({
   userId,
   companyId,
@@ -129,6 +131,13 @@ export async function notifyTvName({
   const isNew = !!newName && !oldName;
   const isChanged = !!newName && !!oldName && newName !== oldName;
 
+  // NEU: eingereichter Name ist identisch mit dem bereits gespeicherten
+  // und es handelt sich nicht um eine Zahlung -> keine Nachricht senden
+  const nameUnchanged = !!newName && !isNew && !isChanged;
+  if (nameUnchanged && !payment) {
+    return;
+  }
+
   const nameToShow = newName ?? oldName;
 
   // Weder Name noch Zahlung -> keine Nachricht
@@ -137,6 +146,9 @@ export async function notifyTvName({
   if (newName && (isNew || isChanged)) {
     await redis.set(tvNameKey(userId), newName);
   }
+
+  // ... ab hier bleibt der Rest exakt wie vorher (icon/title/color-Logik, fields, sendDiscordEmbed)
+
 
   let icon = "💰";
   let title = "Zahlung erhalten";
