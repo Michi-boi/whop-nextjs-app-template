@@ -187,7 +187,7 @@ export async function notifyTvName({
   if (nameToShow) {
     fields.push({
       name: "📈 TradingView-Name",
-      value: "```\n" + nameToShow + "\n```",
+      value:  nameToShow ,
     });
   }
 
