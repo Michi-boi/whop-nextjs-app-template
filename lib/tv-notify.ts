@@ -45,7 +45,6 @@ async function getMembershipDetails(userId: string, companyId: string) {
   return { email, produkt, zyklus, status };
 }
 
-// NEU: sucht die letzte erfolgreiche Zahlung des Nutzers
 async function getLastPaymentDate(
   userId: string,
   companyId: string,
@@ -59,11 +58,7 @@ async function getLastPaymentDate(
       order: "paid_at",
       direction: "desc",
       first: 1,
-    } as any);
-
-
-
-    
+    });
     const payment = payments.data[0];
     if (payment?.paid_at) {
       return new Intl.DateTimeFormat("de-DE", {
@@ -121,7 +116,6 @@ export async function notifyTvName(params: {
   const { username, name } = await getUserBasicInfo(userId);
   const { email, produkt, zyklus, status } = await getMembershipDetails(userId, companyId);
 
-  // NEU: nur bei TV-Name-Änderung die letzte Zahlung laden
   const lastPaymentInfo = isChanged
     ? await getLastPaymentDate(userId, companyId, status)
     : null;
@@ -143,24 +137,51 @@ export async function notifyTvName(params: {
     title = "TradingView-Name geändert";
   }
 
-  const lines = [`${icon} **${title}**`];
-  lines.push(`👤 Whop-Nutzer: ${username} (${name})`);
-  lines.push(`📧 E-Mail: ${email}`);
-  lines.push(`📦 Produkt: ${produkt}`);
-  lines.push(`🔁 Abo-Zyklus: ${zyklus}`);
-  lines.push(
-    isChanged
-      ? `📈 TradingView-Name: ${oldName} →\n\`\`\`\n${newName}\n\`\`\``
-      : `📈 TradingView-Name:\n\`\`\`\n${effectiveName}\n\`\`\``
-  );
+  // Farbe je nach Ereignis-Typ
+  let color = 3447003; // blau (default: Zahlung)
+  if (payment && billingReason === "subscription_create") color = 3066993; // grün
+  else if (isNew) color = 3066993; // grün
+  else if (isChanged) color = 15844367; // gelb/orange
+
+  const descriptionLines: string[] = [];
+  descriptionLines.push(`👤 Whop-Nutzer: ${username} (${name})`);
+  descriptionLines.push(`📧 E-Mail: ${email}`);
+  descriptionLines.push(`📦 Produkt: ${produkt}`);
+  descriptionLines.push(`🔁 Abo-Zyklus: ${zyklus}`);
   if (isChanged && lastPaymentInfo) {
-    lines.push(`🗓️ Letzte Zahlung: ${lastPaymentInfo}`);
+    descriptionLines.push(`🗓️ Letzte Zahlung: ${lastPaymentInfo}`);
   }
   if (payment) {
-    lines.push(`💵 Betrag: ${payment.amount} ${payment.currency.toUpperCase()}`);
+    descriptionLines.push(`💵 Betrag: ${payment.amount} ${payment.currency.toUpperCase()}`);
   }
   const tag = statusTag(status);
-  if (tag) lines.push(tag);
+  if (tag) descriptionLines.push(tag);
 
-  await sendDiscordMessage(lines.join("\n"));
+  const fields: { name: string; value: string; inline?: boolean }[] = [];
+
+  if (isChanged) {
+    fields.push({
+      name: "📈 TradingView-Name (alt)",
+      value: `\`\`\`${oldName}\`\`\``,
+      inline: false,
+    });
+    fields.push({
+      name: "📈 TradingView-Name (neu)",
+      value: `\`\`\`${newName}\`\`\``,
+      inline: false,
+    });
+  } else {
+    fields.push({
+      name: "📈 TradingView-Name",
+      value: `\`\`\`${effectiveName}\`\`\``,
+      inline: false,
+    });
+  }
+
+  await sendDiscordMessage(null, {
+    title: `${icon} ${title}`,
+    description: descriptionLines.join("\n"),
+    color,
+    fields,
+  });
 }
