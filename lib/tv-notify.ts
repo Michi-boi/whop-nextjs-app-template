@@ -19,6 +19,10 @@ const COLORS = {
   fallback: 15844367,     // gold – Zahlung erhalten
 };
 
+function tvNameKey(userId: string) {
+  return `tvname:${userId}`;
+}
+
 export async function getUserBasicInfo(userId: string) {
   try {
     const user = await whopsdk.users.retrieve(userId);
@@ -37,26 +41,23 @@ export async function getMembershipDetails(userId: string, companyId: string) {
       first: 1,
     } as any);
 
-    const membership = memberships.data[0];
+    const membership: any = memberships.data[0];
     if (!membership) {
-      return { email: null, produkt: null, zyklus: null, status: null };
+      return { username: null, name: null, email: null, produkt: null, zyklus: null, status: null };
     }
 
-    const email = (membership as any).email ?? (membership as any).user?.email ?? null;
-    const produkt =
-      (membership as any).product?.title ??
-      (membership as any).plan?.product?.title ??
-      null;
-    const zyklus =
-      (membership as any).plan?.billing_period != null
-        ? `${(membership as any).plan.billing_period} Tage`
-        : (membership as any).plan?.plan_type ?? null;
-    const status = membership.status ?? null;
-
-    return { email, produkt, zyklus, status };
+    return {
+      username: membership.user?.username ?? null,
+      name: membership.user?.name ?? null,
+      email: membership.user?.email ?? null,
+      produkt: membership.product?.title ?? null,
+      // Whop liefert Preis + Intervall bereits fertig formatiert
+      zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
+      status: membership.status ?? null,
+    };
   } catch (e) {
     console.error("getMembershipDetails fehlgeschlagen:", e);
-    return { email: null, produkt: null, zyklus: null, status: null };
+    return { username: null, name: null, email: null, produkt: null, zyklus: null, status: null };
   }
 }
 
@@ -75,7 +76,7 @@ export async function getLastPaymentDate(
       first: 1,
     } as any);
 
-    const lastPayment = payments.data[0];
+    const lastPayment: any = payments.data[0];
 
     if (!lastPayment) {
       if (status === "trialing") {
@@ -84,7 +85,7 @@ export async function getLastPaymentDate(
       return "Keine Zahlung gefunden";
     }
 
-    const paidAt = (lastPayment as any).paid_at ?? lastPayment.created_at;
+    const paidAt = lastPayment.paid_at ?? lastPayment.created_at;
     return new Intl.DateTimeFormat("de-DE", {
       dateStyle: "medium",
       timeStyle: "short",
@@ -100,13 +101,14 @@ export function statusTag(status: string | null): string {
   if (status === "trialing") {
     return "🆕 Erstkunde (im Trial)";
   }
-  return "🔁 Bestandskunde";
+  return "🔁 Bestandskunde (normale Zahlung, kein Trial)";
 }
 
 export function extractTvNameFromMembership(membership: any): string | null {
-  const metadata = membership?.metadata ?? membership?.custom_field_responses ?? null;
-  if (!metadata) return null;
-  return metadata.tv_name ?? metadata.tradingview_name ?? metadata.tvName ?? null;
+  const answer = membership?.custom_field_responses?.find(
+    (r: any) => r.question?.trim() === TV_QUESTION_TEXT
+  );
+  return answer?.answer ?? null;
 }
 
 export async function notifyTvName({
@@ -122,32 +124,29 @@ export async function notifyTvName({
   payment?: PaymentInfo | null;
   billingReason?: string | null;
 }) {
-  const redisKey = `tvname:${userId}`;
-  const oldName = await redis.get<string>(redisKey);
+  const oldName = await redis.get<string>(tvNameKey(userId));
 
   const isNew = !!newName && !oldName;
   const isChanged = !!newName && !!oldName && newName !== oldName;
 
-  // Kein neuer Name und auch kein alter gespeichert -> keine Nachricht senden
-  if (!newName && !oldName) {
-    return;
-  }
-
-  if (newName && (isNew || isChanged)) {
-    await redis.set(redisKey, newName);
-  }
-
   const nameToShow = newName ?? oldName;
 
-  let icon = "💳";
+  // Weder Name noch Zahlung -> keine Nachricht
+  if (!nameToShow && !payment) return;
+
+  if (newName && (isNew || isChanged)) {
+    await redis.set(tvNameKey(userId), newName);
+  }
+
+  let icon = "💰";
   let title = "Zahlung erhalten";
   let color = COLORS.fallback;
 
-  if (billingReason === "subscription_create") {
+  if (payment && billingReason === "subscription_create") {
     icon = "🆕";
     title = "Neue Mitgliedschaft";
     color = COLORS.neu;
-  } else if (billingReason === "subscription_cycle") {
+  } else if (payment && billingReason === "subscription_cycle") {
     icon = "🔄";
     title = "Erfolgreiche Verlängerung";
     color = COLORS.verlaengerung;
@@ -161,35 +160,49 @@ export async function notifyTvName({
     color = COLORS.neuerName;
   }
 
-  const { email, produkt, zyklus, status } = await getMembershipDetails(userId, companyId);
+  const { username, name, email, produkt, zyklus, status } = await getMembershipDetails(
+    userId,
+    companyId
+  );
 
   const fields: { name: string; value: string; inline?: boolean }[] = [];
 
+  if (username) {
+    fields.push({
+      name: "👤 Whop-Nutzer",
+      value: name ? `${username} (${name})` : username,
+      inline: true,
+    });
+  }
   if (email) fields.push({ name: "📧 E-Mail", value: email, inline: true });
   if (produkt) fields.push({ name: "📦 Produkt", value: produkt, inline: true });
-  if (zyklus) fields.push({ name: "🔁 Zyklus", value: zyklus, inline: true });
-  fields.push({ name: "📌 Status", value: statusTag(status), inline: true });
+  if (zyklus) fields.push({ name: "🔁 Abo-Zyklus", value: zyklus, inline: true });
 
   if (payment) {
     fields.push({
-      name: "💰 Zahlung",
+      name: "💵 Zahlung",
       value: `${payment.amount} ${payment.currency.toUpperCase()}`,
       inline: true,
     });
   }
 
   if (isChanged) {
+    fields.push({ name: "📈 Bisheriger Name", value: oldName as string, inline: true });
+
     const lastPaymentInfo = await getLastPaymentDate(userId, companyId, status);
-    fields.push({ name: "🕓 Letzte Zahlung", value: lastPaymentInfo });
+    fields.push({ name: "🗓️ Letzte Zahlung", value: lastPaymentInfo });
   }
 
-  // TV-Name immer als letztes, eigenes Feld — leicht zu markieren/kopieren
+  // Aktueller TV-Name steht IMMER allein im eigenen Feld,
+  // ohne Zusatztext davor/danach -> auf Mobile sauber kopierbar
   if (nameToShow) {
     fields.push({
-      name: "📈 TradingView-Name",
-      value:  nameToShow ,
+      name: isChanged ? "📈 Neuer TradingView-Name" : "📈 TradingView-Name",
+      value: nameToShow,
     });
   }
+
+  fields.push({ name: "📌 Status", value: statusTag(status) });
 
   await sendDiscordEmbed({
     title: `${icon} ${title}`,
