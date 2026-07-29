@@ -1,12 +1,7 @@
-import { Redis } from "@upstash/redis";
 import { whopsdk } from "@/lib/whop-sdk";
 
-const redis = Redis.fromEnv();
-
-// Gemeinsamer Redis-Key für den TradingView-Namen eines Nutzers
-export function tvNameKey(userId: string) {
-  return `tvname:${userId}`;
-}
+// Die Frage aus dem Checkout-Formular
+export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
 
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL!;
 
@@ -31,6 +26,16 @@ export async function getMembershipDetails(membershipId: string) {
     status: membership.status,
     trialEndsAt: membership.renewal_period_end,
   };
+}
+
+// Liest den TradingView-Namen aus den Checkout-Antworten heraus.
+// Funktioniert sowohl für ein Membership-Objekt als auch für ein Payment-Objekt,
+// da beide ein "custom_field_responses"-Feld im gleichen Format haben.
+export function extractTvNameFromMembership(record: any): string | null {
+  const question = record?.custom_field_responses?.find(
+    (q: any) => q.question === TV_QUESTION_TEXT
+  );
+  return question?.answer ?? null;
 }
 
 type NotifyParams = {
