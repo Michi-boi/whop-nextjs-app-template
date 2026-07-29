@@ -52,6 +52,8 @@ function daysUntil(dateStr: string | null): number | null {
  * (in dieser Firma, für dieses Produkt) und liefert alle Infos,
  * die für die Discord-Nachricht gebraucht werden.
  */
+
+
 async function getMembershipContext(
   userId: string,
   companyId: string
@@ -59,13 +61,12 @@ async function getMembershipContext(
   const page = await whopsdk.memberships.list({
     company_id: companyId,
     user_ids: [userId],
-    product_ids: [ALLOWED_PRODUCT_ID],
-    first: 1,
-    order: "created_at",
-    direction: "desc",
+    first: 10,
   });
 
-  const membership = page.data[0];
+  // Filter nach unserem Produkt im Code statt über einen API-Parameter
+  // (das SDK unterstützt hier keinen product_ids-Filter).
+  const membership = page.data.find((m) => m.product?.id === ALLOWED_PRODUCT_ID);
 
   if (!membership) {
     return {
@@ -89,6 +90,7 @@ async function getMembershipContext(
     renewalPeriodEnd: membership.renewal_period_end ?? null,
   };
 }
+
 
 function statusLabel(
   status: string | null,
