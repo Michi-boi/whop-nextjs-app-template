@@ -1,3 +1,20 @@
+export async function sendDiscordMessage(content: string) {
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl) {
+    console.error("DISCORD_WEBHOOK_URL fehlt");
+    return;
+  }
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+  } catch (e) {
+    console.error("Discord-Nachricht fehlgeschlagen:", e);
+  }
+}
+
 type DiscordEmbedField = {
   name: string;
   value: string;
@@ -5,34 +22,24 @@ type DiscordEmbedField = {
 };
 
 type DiscordEmbed = {
-  title?: string;
-  description?: string;
-  color?: number;
-  fields?: DiscordEmbedField[];
-  footer?: { text: string };
+  title: string;
+  color: number;
+  fields: DiscordEmbedField[];
 };
 
-export async function sendDiscordMessage(
-  content: string | null,
-  embed?: DiscordEmbed
-) {
+export async function sendDiscordEmbed(embed: DiscordEmbed) {
   const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
   if (!webhookUrl) {
     console.error("DISCORD_WEBHOOK_URL fehlt");
     return;
   }
-
-  const payload: Record<string, unknown> = {};
-  if (content) payload.content = content;
-  if (embed) payload.embeds = [embed];
-
   try {
     await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ embeds: [embed] }),
     });
   } catch (e) {
-    console.error("Discord-Nachricht fehlgeschlagen:", e);
+    console.error("Discord-Embed fehlgeschlagen:", e);
   }
 }
