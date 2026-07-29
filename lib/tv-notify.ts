@@ -6,7 +6,6 @@ const redis = Redis.fromEnv();
 
 export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
 
-// Nur bei diesem Produkt soll überhaupt eine Discord-Nachricht gesendet werden
 const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa"; // Seasonality Scanner Indikator
 
 export type PaymentInfo = {
@@ -15,11 +14,11 @@ export type PaymentInfo = {
 };
 
 const COLORS = {
-  neu: 3066993,           // grün – Neue Mitgliedschaft
-  verlaengerung: 3447003, // blau – Erfolgreiche Verlängerung
-  neuerName: 1752220,     // türkis – Neuer TV-Name
-  geaendert: 15105570,    // orange – TV-Name geändert
-  fallback: 15844367,     // gold – Zahlung erhalten
+  neu: 3066993,
+  verlaengerung: 3447003,
+  neuerName: 1752220,
+  geaendert: 15105570,
+  fallback: 15844367,
 };
 
 function tvNameKey(userId: string) {
@@ -41,14 +40,12 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
       user_ids: [userId],
-      first: 10, // mehr laden, falls der User mehrere Mitgliedschaften hat (z.B. Gratis-Kurs + Indikator)
+      first: 10,
     } as any);
 
     let membership: any = null;
 
     if (productId) {
-      // Nur Mitgliedschaften mit dem gewünschten Produkt berücksichtigen,
-      // dabei aktive/trialing bevorzugen, falls mehrere existieren
       const matches = memberships.data.filter((m: any) => m.product?.id === productId);
       membership = matches.find((m: any) => m.status === "active" || m.status === "trialing") ?? matches[0] ?? null;
     } else {
@@ -65,7 +62,6 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
       email: membership.user?.email ?? null,
       produkt: membership.product?.title ?? null,
       produkt_id: membership.product?.id ?? null,
-      // Whop liefert Preis + Intervall bereits fertig formatiert
       zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
       status: membership.status ?? null,
     };
@@ -138,13 +134,9 @@ export async function notifyTvName({
   payment?: PaymentInfo | null;
   billingReason?: string | null;
 }) {
-  // Mitgliedschaft EINMAL ganz am Anfang holen und Produkt prüfen.
-  // Nur beim "Seasonality Scanner Indikator" soll überhaupt etwas passieren.
-  // Wichtig: Produkt-ID wird jetzt mitgegeben, damit bei mehreren Mitgliedschaften
-  // (z.B. Gratis-Kurs + Indikator) gezielt die richtige gefunden wird.
   const membershipDetails = await getMembershipDetails(userId, companyId, ALLOWED_PRODUCT_ID);
   if (membershipDetails.produkt_id !== ALLOWED_PRODUCT_ID) {
-    return; // Kein aktives Indikator-Abo -> keine Nachricht (z.B. nur Gratis-Videokurs)
+    return;
   }
 
   const oldName = await redis.get<string>(tvNameKey(userId));
@@ -152,8 +144,6 @@ export async function notifyTvName({
   const isNew = !!newName && !oldName;
   const isChanged = !!newName && !!oldName && newName !== oldName;
 
-  // eingereichter Name ist identisch mit dem bereits gespeicherten
-  // und es handelt sich nicht um eine Zahlung -> keine Nachricht senden
   const nameUnchanged = !!newName && !isNew && !isChanged;
   if (nameUnchanged && !payment) {
     return;
@@ -161,7 +151,6 @@ export async function notifyTvName({
 
   const nameToShow = newName ?? oldName;
 
-  // Weder Name noch Zahlung -> keine Nachricht
   if (!nameToShow && !payment) return;
 
   if (newName && (isNew || isChanged)) {
@@ -190,7 +179,6 @@ export async function notifyTvName({
     color = COLORS.neuerName;
   }
 
-  // Bereits oben geholt -> keine doppelte Abfrage mehr nötig
   const { username, name, email, produkt, zyklus, status } = membershipDetails;
 
   const fields: { name: string; value: string; inline?: boolean }[] = [];
@@ -216,13 +204,15 @@ export async function notifyTvName({
 
   if (isChanged) {
     fields.push({ name: "📈 Bisheriger Name", value: oldName as string, inline: true });
+  }
 
+  // NEU: Letzte Zahlung wird jetzt auch angezeigt, wenn der Name zum ersten Mal
+  // eingetragen wird (z.B. Bestandskunde, der zum ersten Mal seinen TV-Namen einträgt)
+  if (isChanged || isNew) {
     const lastPaymentInfo = await getLastPaymentDate(userId, companyId, status);
     fields.push({ name: "🗓️ Letzte Zahlung", value: lastPaymentInfo });
   }
 
-  // Aktueller TV-Name steht IMMER allein im eigenen Feld,
-  // ohne Zusatztext davor/danach -> auf Mobile sauber kopierbar
   if (nameToShow) {
     fields.push({
       name: isChanged ? "📈 Neuer TradingView-Name" : "📈 TradingView-Name",
