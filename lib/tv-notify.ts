@@ -6,6 +6,9 @@ const redis = Redis.fromEnv();
 
 export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
 
+// NEU: Nur bei diesem Produkt soll überhaupt eine Discord-Nachricht gesendet werden
+const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa"; // Seasonality Scanner Indikator
+
 export type PaymentInfo = {
   amount: number;
   currency: string;
@@ -37,13 +40,13 @@ export async function getMembershipDetails(userId: string, companyId: string) {
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
-      user_ids: [userId],   // ← geändert von user_id zu user_ids: [userId]
+      user_ids: [userId],
       first: 1,
     } as any);
 
     const membership: any = memberships.data[0];
     if (!membership) {
-      return { username: null, name: null, email: null, produkt: null, zyklus: null, status: null };
+      return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null };
     }
 
     return {
@@ -51,13 +54,14 @@ export async function getMembershipDetails(userId: string, companyId: string) {
       name: membership.user?.name ?? null,
       email: membership.user?.email ?? null,
       produkt: membership.product?.title ?? null,
+      produkt_id: membership.product?.id ?? null, // NEU: für den Produkt-Filter
       // Whop liefert Preis + Intervall bereits fertig formatiert
       zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
       status: membership.status ?? null,
     };
   } catch (e) {
     console.error("getMembershipDetails fehlgeschlagen:", e);
-    return { username: null, name: null, email: null, produkt: null, zyklus: null, status: null };
+    return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null };
   }
 }
 
@@ -111,8 +115,6 @@ export function extractTvNameFromMembership(membership: any): string | null {
   return answer?.answer ?? null;
 }
 
-
-
 export async function notifyTvName({
   userId,
   companyId,
@@ -126,12 +128,19 @@ export async function notifyTvName({
   payment?: PaymentInfo | null;
   billingReason?: string | null;
 }) {
+  // NEU: Mitgliedschaft EINMAL ganz am Anfang holen und Produkt prüfen.
+  // Nur beim "Seasonality Scanner Indikator" soll überhaupt etwas passieren.
+  const membershipDetails = await getMembershipDetails(userId, companyId);
+  if (membershipDetails.produkt_id !== ALLOWED_PRODUCT_ID) {
+    return; // z.B. Gratis-Videokurs -> keine Nachricht
+  }
+
   const oldName = await redis.get<string>(tvNameKey(userId));
 
   const isNew = !!newName && !oldName;
   const isChanged = !!newName && !!oldName && newName !== oldName;
 
-  // NEU: eingereichter Name ist identisch mit dem bereits gespeicherten
+  // eingereichter Name ist identisch mit dem bereits gespeicherten
   // und es handelt sich nicht um eine Zahlung -> keine Nachricht senden
   const nameUnchanged = !!newName && !isNew && !isChanged;
   if (nameUnchanged && !payment) {
@@ -146,9 +155,6 @@ export async function notifyTvName({
   if (newName && (isNew || isChanged)) {
     await redis.set(tvNameKey(userId), newName);
   }
-
-  // ... ab hier bleibt der Rest exakt wie vorher (icon/title/color-Logik, fields, sendDiscordEmbed)
-
 
   let icon = "💰";
   let title = "Zahlung erhalten";
@@ -172,10 +178,8 @@ export async function notifyTvName({
     color = COLORS.neuerName;
   }
 
-  const { username, name, email, produkt, zyklus, status } = await getMembershipDetails(
-    userId,
-    companyId
-  );
+  // Bereits oben geholt -> keine doppelte Abfrage mehr nötig
+  const { username, name, email, produkt, zyklus, status } = membershipDetails;
 
   const fields: { name: string; value: string; inline?: boolean }[] = [];
 
