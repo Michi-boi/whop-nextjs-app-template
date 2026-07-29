@@ -42,7 +42,9 @@ type NotifyParams = {
   userId: string;
   username: string;
   tvName: string;
-  membershipId: string;
+  // Optional: nur nötig, wenn wir Trial-/Status-Infos anzeigen wollen
+  // (z.B. bei einer manuellen Namensänderung in der App gibt es das nicht)
+  membershipId?: string;
   billingReason:
     | "trial_started"
     | "subscription_create"
@@ -57,7 +59,14 @@ export async function notifyTvName({
   membershipId,
   billingReason,
 }: NotifyParams) {
-  const { status, trialEndsAt } = await getMembershipDetails(membershipId);
+  let status: string | null = null;
+  let trialEndsAt: string | null = null;
+
+  if (membershipId) {
+    const details = await getMembershipDetails(membershipId);
+    status = details.status;
+    trialEndsAt = details.trialEndsAt;
+  }
 
   let icon = "🔄";
   let title = "TradingView-Name aktualisiert";
