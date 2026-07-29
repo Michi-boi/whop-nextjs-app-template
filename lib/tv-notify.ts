@@ -211,6 +211,12 @@ export async function notifyTvName({
     icon = "✏️";
     title = "TV-Name geändert";
     color = COLORS.geaendert;
+  
+  } else if (billingReason === "trial_started") {
+      icon = "🆕";
+      title = "Trial gestartet";
+      color = COLORS.neu;
+    
   } else if (isNew) {
     icon = "📈";
     title = "Neuer TV-Name";
@@ -261,15 +267,19 @@ export async function notifyTvName({
   fields.push({ name: "📌 Status", value: statusTag(status) });
 
   // NEU: Bei einer laufenden Testversion zusätzlich anzeigen, wie viele Tage sie noch offen ist
-  if (status === "trialing" && trialEndsAt) {
+
+  if (trialEndsAt) {
     const days = daysUntil(trialEndsAt);
+    const label = status === "trialing" ? "🧪 Test-Phase endet in" : "📅 Abo läuft noch";
     fields.push({
-      name: "🧪 Test-Phase endet in",
+      name: label,
       value: `${days} Tag${days === 1 ? "" : "en"}`,
       inline: true,
     });
   }
 
+
+  
   await sendDiscordEmbed({
     title: `${icon} ${title}`,
     color,
