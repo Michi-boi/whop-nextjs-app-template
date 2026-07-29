@@ -8,7 +8,8 @@ export async function POST(req: NextRequest) {
   const body = await req.text();
   const event = JSON.parse(body);
 
-  // NEU: Feuert SOFORT bei Mitgliedschaftsstart (auch im Trial, ohne Zahlung)
+  // Feuert SOFORT bei Mitgliedschaftsstart (auch im Trial, ohne Zahlung)
+  // -> das ist der EINZIGE Ort, an dem der Checkout-Name als "neu" gilt.
   if (event.type === "membership.activated") {
     try {
       const membershipData = event.data;
@@ -44,32 +45,27 @@ export async function POST(req: NextRequest) {
       }
 
       const billingReason = payment.billing_reason ?? null;
-      const isNewMembership = billingReason === "subscription_create";
-
-      let tvNameFromCheckout: string | null = null;
-
-      if (isNewMembership && membershipId) {
-        try {
-          const membership = await whopsdk.memberships.retrieve(membershipId);
-          tvNameFromCheckout = extractTvNameFromMembership(membership);
-        } catch (e) {
-          console.error("Fehler beim Laden der Mitgliedschaft:", e);
-        }
-      }
 
       const paymentInfo = {
         amount: payment.final_amount ?? payment.amount,
         currency: payment.currency,
       };
 
-      if (tvNameFromCheckout) {
-        await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, payment: paymentInfo, billingReason });
-      } else {
-        const existing = await redis.get<string>(tvNameKey(userId));
-        if (existing) {
-          await notifyTvName({ userId, companyId, newName: null, payment: paymentInfo, billingReason });
-        }
+      // WICHTIG: payment.succeeded fasst den TV-Namen NIE an - weder bei
+      // Erstzahlung noch bei Verlängerung. Der Checkout-Name wird
+      // ausschließlich bei membership.activated erfasst (Neueintritt ins
+      // Produkt). Bis zum nächsten Neueintritt gilt danach ausschließlich
+      // der zuletzt über /api/nickname gespeicherte Wert. Hier wird nur
+      // der bereits gespeicherte Name (falls vorhanden) für die
+      // Zahlungs-Benachrichtigung mitgegeben.
+      const existing = await redis.get<string>(tvNameKey(userId));
+
+      if (existing) {
+        await notifyTvName({ userId, companyId, newName: null, payment: paymentInfo, billingReason });
       }
+      // Kein existing -> noch kein Name bekannt (sollte durch
+      // membership.activated normalerweise schon erfasst sein), dann gibt
+      // es hier nichts zu melden.
     } catch (e) {
       console.error("Fehler bei payment.succeeded Verarbeitung:", e);
     }
