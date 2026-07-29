@@ -109,9 +109,10 @@ export async function notifyTvName(params: {
   lines.push(`🔁 Abo-Zyklus: ${zyklus}`);
   lines.push(
     isChanged
-      ? `📈 TradingView-Name: ${oldName} → ${newName}`
-      : `📈 TradingView-Name: ${effectiveName}`
+      ? `TradingView-Name: ${oldName} →\n\`\`\`\n${newName}\n\`\`\``
+      : `📈 TradingView-Name:\n\`\`\`\n${effectiveName}\n\`\`\``
   );
+
   if (payment) {
     lines.push(`💵 Betrag: ${payment.amount} ${payment.currency.toUpperCase()}`);
   }
