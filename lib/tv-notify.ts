@@ -53,22 +53,20 @@ function daysUntil(dateStr: string | null): number | null {
  * die für die Discord-Nachricht gebraucht werden.
  */
 
-
 async function getMembershipContext(
   userId: string,
   companyId: string
 ): Promise<MembershipContext> {
-  const page = await whopsdk.memberships.list({
+  const listPage = await whopsdk.memberships.list({
     company_id: companyId,
     user_ids: [userId],
     first: 10,
   });
 
-  // Filter nach unserem Produkt im Code statt über einen API-Parameter
-  // (das SDK unterstützt hier keinen product_ids-Filter).
-  const membership = page.data.find((m) => m.product?.id === ALLOWED_PRODUCT_ID);
+  // Passende Mitgliedschaft für unser Produkt finden
+  const summary = listPage.data.find((m) => m.product?.id === ALLOWED_PRODUCT_ID);
 
-  if (!membership) {
+  if (!summary) {
     return {
       username: userId,
       displayName: null,
@@ -79,6 +77,10 @@ async function getMembershipContext(
       renewalPeriodEnd: null,
     };
   }
+
+  // Volle Details (inkl. E-Mail) über retrieveMembership nachladen -
+  // die Liste liefert einen abgespeckten Nutzer-Typ ohne E-Mail-Feld.
+  const membership = await whopsdk.memberships.retrieve(summary.id);
 
   return {
     username: membership.user?.username ?? userId,
