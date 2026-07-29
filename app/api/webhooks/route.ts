@@ -20,9 +20,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ received: true });
       }
 
+      const billingReason = payment.billing_reason ?? null;
+
+      // WICHTIG: Der Checkout-Name darf NUR bei einem echten Neukauf zählen
+      // (Erstkauf oder Neubuchung nach Kündigung). Bei einer normalen
+      // Verlängerung (subscription_cycle) bleibt ein später in der App
+      // geänderter Name unangetastet.
+      const isNewMembership = billingReason === "subscription_create";
+
       let tvNameFromCheckout: string | null = null;
 
-      if (membershipId) {
+      if (isNewMembership && membershipId) {
         try {
           const membership = await whopsdk.memberships.retrieve(membershipId);
           tvNameFromCheckout = extractTvNameFromMembership(membership);
@@ -35,8 +43,6 @@ export async function POST(req: NextRequest) {
         amount: payment.final_amount ?? payment.amount,
         currency: payment.currency,
       };
-
-      const billingReason = payment.billing_reason ?? null;
 
       if (tvNameFromCheckout) {
         await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, payment: paymentInfo, billingReason });
