@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { whopsdk } from "@/lib/whop-sdk";
 import { notifyTvName, extractTvNameFromMembership } from "@/lib/tv-notify";
+import { notifyChurn } from "@/lib/churn-notify";
 import { redis, tvNameKey } from "@/lib/redis";
 
 export async function POST(req: NextRequest) {
@@ -8,7 +9,6 @@ export async function POST(req: NextRequest) {
   const event = JSON.parse(body);
 
   if (event.type === "payment.succeeded") {
-
     try {
       const payment = event.data;
       const membershipId = payment.membership?.id;
@@ -36,7 +36,6 @@ export async function POST(req: NextRequest) {
         currency: payment.currency,
       };
 
-      // NEU: sagt uns, ob es ein Neu-Beitritt oder eine Verlängerung ist
       const billingReason = payment.billing_reason ?? null;
 
       if (tvNameFromCheckout) {
@@ -49,6 +48,14 @@ export async function POST(req: NextRequest) {
       }
     } catch (e) {
       console.error("Fehler bei payment.succeeded Verarbeitung:", e);
+    }
+  }
+
+  if (event.type === "membership.deactivated") {
+    try {
+      await notifyChurn(event.data);
+    } catch (e) {
+      console.error("Fehler bei membership.deactivated Verarbeitung:", e);
     }
   }
 
