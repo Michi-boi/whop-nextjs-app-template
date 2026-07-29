@@ -45,6 +45,39 @@ async function getMembershipDetails(userId: string, companyId: string) {
   return { email, produkt, zyklus, status };
 }
 
+// NEU: sucht die letzte erfolgreiche Zahlung des Nutzers
+async function getLastPaymentDate(
+  userId: string,
+  companyId: string,
+  membershipStatus: string | null
+): Promise<string> {
+  try {
+    const payments = await whopsdk.payments.list({
+      company_id: companyId,
+      query: userId,
+      statuses: ["paid"],
+      order: "paid_at",
+      direction: "desc",
+      first: 1,
+    });
+    const payment = payments.data[0];
+    if (payment?.paid_at) {
+      return new Intl.DateTimeFormat("de-DE", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "Europe/Berlin",
+      }).format(new Date(payment.paid_at));
+    }
+  } catch (e) {
+    console.error("Fehler beim Laden der letzten Zahlung:", e);
+  }
+
+  if (membershipStatus === "trialing") {
+    return "Noch keine Zahlung – aktuell im Trial";
+  }
+  return "Keine Zahlung gefunden";
+}
+
 function statusTag(status: string | null): string {
   if (status === "trialing") return "🆕 Erstkunde (aktuell im 10-Tage-Trial)";
   if (status) return "🔁 Bestandskunde (normale Zahlung, kein Trial)";
@@ -63,7 +96,7 @@ export async function notifyTvName(params: {
   companyId: string;
   newName: string | null;
   payment?: PaymentInfo | null;
-  billingReason?: string | null; // NEU
+  billingReason?: string | null;
 }) {
   const { userId, companyId, newName, payment, billingReason } = params;
   if (!newName && !payment) return;
@@ -84,10 +117,14 @@ export async function notifyTvName(params: {
   const { username, name } = await getUserBasicInfo(userId);
   const { email, produkt, zyklus, status } = await getMembershipDetails(userId, companyId);
 
+  // NEU: nur bei TV-Name-Änderung die letzte Zahlung laden
+  const lastPaymentInfo = isChanged
+    ? await getLastPaymentDate(userId, companyId, status)
+    : null;
+
   let icon = "💰";
   let title = "Zahlung erhalten";
 
-  // NEU: Bei einer Zahlung entscheidet billingReason über die Überschrift
   if (payment && billingReason === "subscription_create") {
     icon = "🆕";
     title = "Neue Mitgliedschaft";
@@ -109,10 +146,12 @@ export async function notifyTvName(params: {
   lines.push(`🔁 Abo-Zyklus: ${zyklus}`);
   lines.push(
     isChanged
-      ? `TradingView-Name: ${oldName} →\n\`\`\`\n${newName}\n\`\`\``
+      ? `📈 TradingView-Name: ${oldName} →\n\`\`\`\n${newName}\n\`\`\``
       : `📈 TradingView-Name:\n\`\`\`\n${effectiveName}\n\`\`\``
   );
-
+  if (isChanged && lastPaymentInfo) {
+    lines.push(`🗓️ Letzte Zahlung: ${lastPaymentInfo}`);
+  }
   if (payment) {
     lines.push(`💵 Betrag: ${payment.amount} ${payment.currency.toUpperCase()}`);
   }
