@@ -6,7 +6,7 @@ import { sendDiscordEmbed } from "./discord";
 
 const redis = Redis.fromEnv();
 
-export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
+export const TV_QUESTION_TEXT = "Dein TradingView Name";
 
 const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa"; // Seasonality Scanner Indikator
 
@@ -247,36 +247,6 @@ export async function notifyTvName({
     color,
     fields,
   });
-}
-
-export function extractTvNameFromMembership(membership: any): string | null {
-  const responses = membership?.custom_field_responses ?? [];
-
-  if (responses.length === 0) {
-    console.log("[tv-notify] Keine custom_field_responses auf Membership:", membership?.id);
-    return null;
-  }
-
-  const normalize = (s: string | undefined) => s?.trim().toLowerCase() ?? "";
-
-  let answer = responses.find(
-    (r: any) => normalize(r.question) === normalize(TV_QUESTION_TEXT)
-  );
-
-  if (!answer) {
-    // Fallback: falls sich der Fragetext leicht unterscheidet
-    answer = responses.find((r: any) => normalize(r.question).includes("tradingview"));
-  }
-
-  if (!answer) {
-    console.log(
-      "[tv-notify] TradingView-Frage nicht gefunden. Vorhandene Fragen:",
-      responses.map((r: any) => r.question)
-    );
-    return null;
-  }
-
-  return answer.answer ?? null;
 }
 
 
