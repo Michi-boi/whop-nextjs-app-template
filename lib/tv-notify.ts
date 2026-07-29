@@ -1,248 +1,108 @@
 import { Redis } from "@upstash/redis";
 import { whopsdk } from "@/lib/whop-sdk";
-import { sendDiscordEmbed } from "./discord";
 
 const redis = Redis.fromEnv();
 
-export const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
-
-const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa"; // Seasonality Scanner Indikator
-
-export type PaymentInfo = {
-  amount: number;
-  currency: string;
-};
-
-const COLORS = {
-  neu: 3066993,
-  verlaengerung: 3447003,
-  neuerName: 1752220,
-  geaendert: 15105570,
-  fallback: 15844367,
-};
-
-function tvNameKey(userId: string) {
+// Gemeinsamer Redis-Key für den TradingView-Namen eines Nutzers
+export function tvNameKey(userId: string) {
   return `tvname:${userId}`;
 }
 
-// NEU: Rechnet aus, wie viele Tage bis zu einem Datum verbleiben (min. 0)
-function daysUntil(dateStr: string): number {
-  const ms = new Date(dateStr).getTime() - Date.now();
-  return Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL!;
+
+const COLORS = {
+  neu: 0x22c55e,      // grün – neuer Kauf / neuer Trial
+  update: 0x3b82f6,   // blau – Name in der App geändert
+  standard: 0x9ca3af, // grau – normale Verlängerung
+};
+
+// Rechnet aus, wie viele Tage bis zu einem Datum noch übrig sind
+export function daysUntil(dateStr: string | null): number | null {
+  if (!dateStr) return null;
+  const diffMs = new Date(dateStr).getTime() - Date.now();
+  if (diffMs <= 0) return 0;
+  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 }
 
-export async function getUserBasicInfo(userId: string) {
-  try {
-    const user = await whopsdk.users.retrieve(userId);
-    return { name: user.name ?? null, username: user.username ?? null };
-  } catch (e) {
-    console.error("getUserBasicInfo fehlgeschlagen:", e);
-    return { name: null, username: null };
-  }
+// Holt Status + Trial-Ende direkt von Whop
+export async function getMembershipDetails(membershipId: string) {
+  const membership = await whopsdk.memberships.retrieve(membershipId);
+  return {
+    status: membership.status,
+    trialEndsAt: membership.renewal_period_end,
+  };
 }
 
-export async function getMembershipDetails(userId: string, companyId: string, productId?: string) {
-  try {
-    const memberships = await whopsdk.memberships.list({
-      company_id: companyId,
-      user_ids: [userId],
-      first: 10,
-    } as any);
-
-    let membership: any = null;
-
-    if (productId) {
-      const matches = memberships.data.filter((m: any) => m.product?.id === productId);
-      membership = matches.find((m: any) => m.status === "active" || m.status === "trialing") ?? matches[0] ?? null;
-    } else {
-      membership = memberships.data[0] ?? null;
-    }
-
-    if (!membership) {
-      return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
-    }
-
-    return {
-      username: membership.user?.username ?? null,
-      name: membership.user?.name ?? null,
-      email: membership.user?.email ?? null,
-      produkt: membership.product?.title ?? null,
-      produkt_id: membership.product?.id ?? null,
-      zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
-      status: membership.status ?? null,
-      // NEU: Ende der aktuellen Periode (bei Trial = Trial-Ende)
-      trialEndsAt: membership.renewal_period_end ?? null,
-    };
-  } catch (e) {
-    console.error("getMembershipDetails fehlgeschlagen:", e);
-    return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
-  }
-}
-
-export async function getLastPaymentDate(
-  userId: string,
-  companyId: string,
-  status?: string | null
-): Promise<string> {
-  try {
-    const payments = await whopsdk.payments.list({
-      company_id: companyId,
-      query: userId,
-      statuses: ["paid"],
-      order: "paid_at",
-      direction: "desc",
-      first: 1,
-    } as any);
-
-    const lastPayment: any = payments.data[0];
-
-    if (!lastPayment) {
-      if (status === "trialing") {
-        return "Noch keine Zahlung – aktuell im Trial";
-      }
-      return "Keine Zahlung gefunden";
-    }
-
-    const paidAt = lastPayment.paid_at ?? lastPayment.created_at;
-    return new Intl.DateTimeFormat("de-DE", {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: "Europe/Berlin",
-    }).format(new Date(paidAt));
-  } catch (e) {
-    console.error("getLastPaymentDate fehlgeschlagen:", e);
-    return "Keine Zahlung gefunden";
-  }
-}
-
-export function statusTag(status: string | null): string {
-  if (status === "trialing") {
-    return "🆕 Erstkunde (im Trial)";
-  }
-  return "🔁 Bestandskunde (normale Zahlung, kein Trial)";
-}
-
-export function extractTvNameFromMembership(membership: any): string | null {
-  const answer = membership?.custom_field_responses?.find(
-    (r: any) => r.question?.trim() === TV_QUESTION_TEXT
-  );
-  return answer?.answer ?? null;
-}
+type NotifyParams = {
+  userId: string;
+  username: string;
+  tvName: string;
+  membershipId: string;
+  billingReason:
+    | "trial_started"
+    | "subscription_create"
+    | "subscription_cycle"
+    | "manual_update";
+};
 
 export async function notifyTvName({
   userId,
-  companyId,
-  newName,
-  payment,
+  username,
+  tvName,
+  membershipId,
   billingReason,
-}: {
-  userId: string;
-  companyId: string;
-  newName: string | null;
-  payment?: PaymentInfo | null;
-  billingReason?: string | null;
-}) {
-  const membershipDetails = await getMembershipDetails(userId, companyId, ALLOWED_PRODUCT_ID);
-  if (membershipDetails.produkt_id !== ALLOWED_PRODUCT_ID) {
-    return;
-  }
+}: NotifyParams) {
+  const { status, trialEndsAt } = await getMembershipDetails(membershipId);
 
-  const oldName = await redis.get<string>(tvNameKey(userId));
+  let icon = "🔄";
+  let title = "TradingView-Name aktualisiert";
+  let color = COLORS.standard;
 
-  const isNew = !!newName && !oldName;
-  const isChanged = !!newName && !!oldName && newName !== oldName;
-
-  const nameUnchanged = !!newName && !isNew && !isChanged;
-  if (nameUnchanged && !payment) {
-    return;
-  }
-
-  const nameToShow = newName ?? oldName;
-
-  if (!nameToShow && !payment) return;
-
-  if (newName && (isNew || isChanged)) {
-    await redis.set(tvNameKey(userId), newName);
-  }
-
-  let icon = "💰";
-  let title = "Zahlung erhalten";
-  let color = COLORS.fallback;
-
-  if (payment && billingReason === "subscription_create") {
+  // WICHTIG: dieser Zweig muss VOR "subscription_create" stehen
+  if (billingReason === "trial_started") {
     icon = "🆕";
-    title = "Neue Mitgliedschaft";
+    title = "Trial gestartet";
     color = COLORS.neu;
-  } else if (payment && billingReason === "subscription_cycle") {
-    icon = "🔄";
-    title = "Erfolgreiche Verlängerung";
-    color = COLORS.verlaengerung;
-  } else if (isChanged) {
+  } else if (billingReason === "subscription_create") {
+    icon = "🆕";
+    title = "Neue Zahlung eingegangen";
+    color = COLORS.neu;
+  } else if (billingReason === "subscription_cycle") {
+    icon = "💳";
+    title = "Verlängerung eingegangen";
+    color = COLORS.standard;
+  } else if (billingReason === "manual_update") {
     icon = "✏️";
-    title = "TV-Name geändert";
-    color = COLORS.geaendert;
-  } else if (isNew) {
-    icon = "📈";
-    title = "Neuer TV-Name";
-    color = COLORS.neuerName;
+    title = "Name in der App geändert";
+    color = COLORS.update;
   }
 
-  const { username, name, email, produkt, zyklus, status, trialEndsAt } = membershipDetails;
+  const fields: { name: string; value: string; inline: boolean }[] = [
+    { name: "👤 Nutzer", value: username, inline: true },
+    { name: "📈 TradingView-Name", value: tvName || "-", inline: true },
+  ];
 
-  const fields: { name: string; value: string; inline?: boolean }[] = [];
-
-  if (username) {
-    fields.push({
-      name: "👤 Whop-Nutzer",
-      value: name ? `${username} (${name})` : username,
-      inline: true,
-    });
-  }
-  if (email) fields.push({ name: "📧 E-Mail", value: email, inline: true });
-  if (produkt) fields.push({ name: "📦 Produkt", value: produkt, inline: true });
-  if (zyklus) fields.push({ name: "🔁 Abo-Zyklus", value: zyklus, inline: true });
-
-  if (payment) {
-    fields.push({
-      name: "💵 Zahlung",
-      value: `${payment.amount} ${payment.currency.toUpperCase()}`,
-      inline: true,
-    });
-  }
-
-  if (isChanged) {
-    fields.push({ name: "📈 Bisheriger Name", value: oldName as string, inline: true });
-  }
-
-  // NEU: Letzte Zahlung wird jetzt auch angezeigt, wenn der Name zum ersten Mal
-  // eingetragen wird (z.B. Bestandskunde, der zum ersten Mal seinen TV-Namen einträgt)
-  if (isChanged || isNew) {
-    const lastPaymentInfo = await getLastPaymentDate(userId, companyId, status);
-    fields.push({ name: "🗓️ Letzte Zahlung", value: lastPaymentInfo });
-  }
-
-  if (nameToShow) {
-    fields.push({
-      name: isChanged ? "📈 Neuer TradingView-Name" : "📈 TradingView-Name",
-      value: nameToShow,
-    });
-  }
-
-  fields.push({ name: "📌 Status", value: statusTag(status) });
-
-  // NEU: Bei einer laufenden Testversion zusätzlich anzeigen, wie viele Tage sie noch offen ist
-  if (status === "trialing" && trialEndsAt) {
+  if (status === "trialing") {
     const days = daysUntil(trialEndsAt);
     fields.push({
       name: "🧪 Test-Phase endet in",
-      value: `${days} Tag${days === 1 ? "" : "en"}`,
+      value: days !== null ? `${days} Tag(e)` : "unbekannt",
       inline: true,
     });
   }
 
-  await sendDiscordEmbed({
-    title: `${icon} ${title}`,
-    color,
-    fields,
+  await fetch(DISCORD_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      embeds: [
+        {
+          title: `${icon} ${title}`,
+          color,
+          fields,
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    }),
   });
 }
