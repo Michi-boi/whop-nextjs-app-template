@@ -25,6 +25,12 @@ function tvNameKey(userId: string) {
   return `tvname:${userId}`;
 }
 
+// NEU: Rechnet aus, wie viele Tage bis zu einem Datum verbleiben (min. 0)
+function daysUntil(dateStr: string): number {
+  const ms = new Date(dateStr).getTime() - Date.now();
+  return Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24)));
+}
+
 export async function getUserBasicInfo(userId: string) {
   try {
     const user = await whopsdk.users.retrieve(userId);
@@ -53,7 +59,7 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
     }
 
     if (!membership) {
-      return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null };
+      return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
     }
 
     return {
@@ -64,10 +70,12 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
       produkt_id: membership.product?.id ?? null,
       zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
       status: membership.status ?? null,
+      // NEU: Ende der aktuellen Periode (bei Trial = Trial-Ende)
+      trialEndsAt: membership.renewal_period_end ?? null,
     };
   } catch (e) {
     console.error("getMembershipDetails fehlgeschlagen:", e);
-    return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null };
+    return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
   }
 }
 
@@ -179,7 +187,7 @@ export async function notifyTvName({
     color = COLORS.neuerName;
   }
 
-  const { username, name, email, produkt, zyklus, status } = membershipDetails;
+  const { username, name, email, produkt, zyklus, status, trialEndsAt } = membershipDetails;
 
   const fields: { name: string; value: string; inline?: boolean }[] = [];
 
@@ -221,6 +229,16 @@ export async function notifyTvName({
   }
 
   fields.push({ name: "📌 Status", value: statusTag(status) });
+
+  // NEU: Bei einer laufenden Testversion zusätzlich anzeigen, wie viele Tage sie noch offen ist
+  if (status === "trialing" && trialEndsAt) {
+    const days = daysUntil(trialEndsAt);
+    fields.push({
+      name: "🧪 Test-Phase endet in",
+      value: `${days} Tag${days === 1 ? "" : "en"}`,
+      inline: true,
+    });
+  }
 
   await sendDiscordEmbed({
     title: `${icon} ${title}`,
