@@ -43,3 +43,35 @@ export async function sendDiscordEmbed(embed: DiscordEmbed) {
     console.error("Discord-Embed fehlgeschlagen:", e);
   }
 }
+
+
+export async function sendDiscordEmbedTo(
+  webhookUrl: string,
+  embed: { title: string; color: number; fields: { name: string; value: string; inline?: boolean }[] }
+) {
+  if (!webhookUrl) {
+    console.error("Discord Webhook URL fehlt (Ziel-Webhook nicht konfiguriert)");
+    return;
+  }
+
+  const res = await fetch(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      embeds: [
+        {
+          title: embed.title,
+          color: embed.color,
+          fields: embed.fields,
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("Discord Webhook Fehler:", res.status, text);
+  }
+}
+
