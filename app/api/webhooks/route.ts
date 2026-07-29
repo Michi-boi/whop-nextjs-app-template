@@ -4,6 +4,39 @@ import { notifyTvName, extractTvNameFromMembership } from "@/lib/tv-notify";
 import { notifyChurn } from "@/lib/churn-notify";
 import { redis, tvNameKey } from "@/lib/redis";
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Versucht mehrfach mit kurzer Pause, den Custom-Field-Wert aus der
+// Mitgliedschaft zu lesen. Notwendig, weil der Custom-Field-Eintrag bei
+// bestimmten Checkout-Varianten (z.B. 100%-Promo-Codes) verzögert bei Whop
+// ankommt und beim ersten Abruf direkt nach dem Webhook noch nicht da ist.
+async function fetchTvNameWithRetry(
+  membershipId: string,
+  initialMembership: any,
+  attempts = 3,
+  delayMs = 3000
+): Promise<string | null> {
+  let membership = initialMembership;
+
+  for (let i = 0; i < attempts; i++) {
+    const tvName = extractTvNameFromMembership(membership);
+    if (tvName) return tvName;
+
+    if (i < attempts - 1) {
+      await sleep(delayMs);
+      try {
+        membership = await whopsdk.memberships.retrieve(membershipId);
+      } catch (e) {
+        console.error("Fehler beim erneuten Laden der Mitgliedschaft:", e);
+      }
+    }
+  }
+
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.text();
   const event = JSON.parse(body);
@@ -17,12 +50,8 @@ export async function POST(req: NextRequest) {
       const userId = membershipData?.user?.id;
       const companyId = membershipData?.company?.id;
 
-      if (userId && companyId) {
-        let membership = membershipData;
-        if (!membership?.custom_field_responses && membershipId) {
-          membership = await whopsdk.memberships.retrieve(membershipId);
-        }
-        const tvNameFromCheckout = extractTvNameFromMembership(membership);
+      if (userId && companyId && membershipId) {
+        const tvNameFromCheckout = await fetchTvNameWithRetry(membershipId, membershipData);
         if (tvNameFromCheckout) {
           await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, billingReason: "trial_started" });
         }
