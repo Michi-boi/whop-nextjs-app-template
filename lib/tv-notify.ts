@@ -59,7 +59,11 @@ async function getLastPaymentDate(
       order: "paid_at",
       direction: "desc",
       first: 1,
-    });
+    } as any);
+
+
+
+    
     const payment = payments.data[0];
     if (payment?.paid_at) {
       return new Intl.DateTimeFormat("de-DE", {
