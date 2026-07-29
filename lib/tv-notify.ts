@@ -85,13 +85,14 @@ async function getMembershipContext(
   return {
     username: membership.user?.username ?? userId,
     displayName: membership.user?.name ?? null,
-    email: membership.user?.email ?? null,
+    email: (membership.user as { email?: string | null } | null)?.email ?? null,
     productTitle: membership.product?.title ?? null,
     formattedRenewalPrice: membership.formatted_renewal_price ?? null,
     status: membership.status ?? null,
     renewalPeriodEnd: membership.renewal_period_end ?? null,
   };
-}
+
+
 
 
 function statusLabel(
