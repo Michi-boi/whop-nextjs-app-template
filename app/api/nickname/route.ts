@@ -1,35 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
-import { whopsdk } from "@/lib/whop-sdk";
-import { notifyTvName } from "@/lib/tv-notify";
 import { redis, tvNameKey } from "@/lib/redis";
-
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+import { notifyTvName } from "@/lib/tv-notify";
 
 export async function POST(req: NextRequest) {
   try {
     const { userId, companyId, nickname } = await req.json();
+
     if (!userId || !companyId || !nickname) {
-      return NextResponse.json({ error: "Fehlende Daten" }, { status: 400 });
+      return NextResponse.json(
+        { error: "userId, companyId und nickname sind erforderlich" },
+        { status: 400 }
+      );
     }
 
-    // Neuen Namen speichern - "wer zuletzt schreibt, gewinnt"
     await redis.set(tvNameKey(userId), nickname);
-
-    // Nutzername für die Discord-Nachricht holen
-    const user = await whopsdk.users.retrieve(userId);
-    const username = user?.username ?? user?.name ?? userId;
 
     await notifyTvName({
       userId,
-      username,
+      companyId,
       tvName: nickname,
       billingReason: "manual_update",
     });
 
     return NextResponse.json({ success: true });
-  } catch (e) {
-    console.error("Fehler in /api/nickname:", e);
-    return NextResponse.json({ error: "Serverfehler" }, { status: 500 });
+  } catch (error) {
+    console.error("Fehler beim Speichern des TradingView-Namens:", error);
+    return NextResponse.json({ error: "Interner Serverfehler" }, { status: 500 });
   }
 }
