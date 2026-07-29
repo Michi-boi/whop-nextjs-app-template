@@ -1,14 +1,14 @@
 import { waitUntil } from "@vercel/functions";
 import type { NextRequest } from "next/server";
-import { Redis } from "@upstash/redis";
 import { whopsdk } from "@/lib/whop-sdk";
-import { tvNameKey, notifyTvName } from "@/lib/tv-notify";
+import {
+  notifyTvName,
+  extractTvNameFromMembership,
+} from "@/lib/tv-notify";
 import { notifyChurn } from "@/lib/churn-notify";
-
-const redis = Redis.fromEnv();
+import { redis, tvNameKey } from "@/lib/redis";
 
 const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa";
-const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
 
 export async function POST(request: NextRequest): Promise<Response> {
   const requestBodyText = await request.text();
@@ -40,10 +40,7 @@ async function handleMembershipActivated(membership: any) {
   const username = membership.user?.username ?? membership.user?.name ?? "unbekannt";
   if (!userId) return;
 
-  const question = membership.custom_field_responses?.find(
-    (q: any) => q.question === TV_QUESTION_TEXT
-  );
-  const checkoutName = question?.answer;
+  const checkoutName = extractTvNameFromMembership(membership);
   if (!checkoutName) return;
 
   await redis.set(tvNameKey(userId), checkoutName);
@@ -71,10 +68,7 @@ async function handlePaymentSucceeded(payment: any) {
   const billingReason = payment.billing_reason;
 
   if (billingReason === "subscription_create") {
-    const question = payment.custom_field_responses?.find(
-      (q: any) => q.question === TV_QUESTION_TEXT
-    );
-    const checkoutName = question?.answer;
+    const checkoutName = extractTvNameFromMembership(payment);
     if (checkoutName) {
       await redis.set(tvNameKey(userId), checkoutName);
     }
