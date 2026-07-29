@@ -1,69 +1,101 @@
-import { NextRequest, NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
+import type { NextRequest } from "next/server";
+import { Redis } from "@upstash/redis";
 import { whopsdk } from "@/lib/whop-sdk";
-import { notifyTvName, extractTvNameFromMembership } from "@/lib/tv-notify";
+import { tvNameKey, notifyTvName } from "@/lib/tv-notify";
 import { notifyChurn } from "@/lib/churn-notify";
-import { redis, tvNameKey } from "@/lib/redis";
 
-export async function POST(req: NextRequest) {
-  const body = await req.text();
-  const event = JSON.parse(body);
+const redis = Redis.fromEnv();
 
-  if (event.type === "payment.succeeded") {
-    try {
-      const payment = event.data;
-      const membershipId = payment.membership?.id;
-      const userId = payment.user?.id ?? payment.user_id;
-      const companyId = payment.company?.id ?? payment.company_id;
+const ALLOWED_PRODUCT_ID = "prod_vPTqfmAJBrWMa";
+const TV_QUESTION_TEXT = "Wie lautet dein TradingView-Benutzername?";
 
-      if (!userId || !companyId) {
-        console.error("payment.succeeded: userId oder companyId fehlt", payment.id);
-        return NextResponse.json({ received: true });
-      }
+export async function POST(request: NextRequest): Promise<Response> {
+  const requestBodyText = await request.text();
+  const headers = Object.fromEntries(request.headers);
+  const webhookData = whopsdk.webhooks.unwrap(requestBodyText, { headers });
 
-      const billingReason = payment.billing_reason ?? null;
+  // NEU: feuert sofort beim Start einer Mitgliedschaft (auch im Trial, ohne Zahlung)
+  if (webhookData.type === "membership.activated") {
+    waitUntil(handleMembershipActivated(webhookData.data));
+  }
 
-      // WICHTIG: Der Checkout-Name darf NUR bei einem echten Neukauf zählen
-      // (Erstkauf oder Neubuchung nach Kündigung). Bei einer normalen
-      // Verlängerung (subscription_cycle) bleibt ein später in der App
-      // geänderter Name unangetastet.
-      const isNewMembership = billingReason === "subscription_create";
+  if (webhookData.type === "payment.succeeded") {
+    waitUntil(handlePaymentSucceeded(webhookData.data));
+  }
 
-      let tvNameFromCheckout: string | null = null;
+  if (webhookData.type === "membership.deactivated") {
+    waitUntil(handleMembershipDeactivated(webhookData.data));
+  }
 
-      if (isNewMembership && membershipId) {
-        try {
-          const membership = await whopsdk.memberships.retrieve(membershipId);
-          tvNameFromCheckout = extractTvNameFromMembership(membership);
-        } catch (e) {
-          console.error("Fehler beim Laden der Mitgliedschaft:", e);
-        }
-      }
+  return new Response("OK", { status: 200 });
+}
 
-      const paymentInfo = {
-        amount: payment.final_amount ?? payment.amount,
-        currency: payment.currency,
-      };
+// Sofort bei Mitgliedschaftsstart: liest den Checkout-Namen aus dem Formular
+// und schreibt ihn direkt ins Redis - ganz ohne auf die erste Zahlung zu warten.
+async function handleMembershipActivated(membership: any) {
+  if (membership.product?.id !== ALLOWED_PRODUCT_ID) return;
 
-      if (tvNameFromCheckout) {
-        await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, payment: paymentInfo, billingReason });
-      } else {
-        const existing = await redis.get<string>(tvNameKey(userId));
-        if (existing) {
-          await notifyTvName({ userId, companyId, newName: null, payment: paymentInfo, billingReason });
-        }
-      }
-    } catch (e) {
-      console.error("Fehler bei payment.succeeded Verarbeitung:", e);
+  const userId = membership.user?.id;
+  const username = membership.user?.username ?? membership.user?.name ?? "unbekannt";
+  if (!userId) return;
+
+  const question = membership.custom_field_responses?.find(
+    (q: any) => q.question === TV_QUESTION_TEXT
+  );
+  const checkoutName = question?.answer;
+  if (!checkoutName) return;
+
+  await redis.set(tvNameKey(userId), checkoutName);
+
+  await notifyTvName({
+    userId,
+    username,
+    tvName: checkoutName,
+    membershipId: membership.id,
+    billingReason: "trial_started",
+  });
+}
+
+// Bei jeder Zahlung: Checkout-Name wird NUR bei einem echten Neukauf
+// (subscription_create) übernommen - nicht bei normalen Verlängerungen
+// (subscription_cycle), damit ein später in der App geänderter Name nicht
+// wieder überschrieben wird.
+async function handlePaymentSucceeded(payment: any) {
+  if (payment.product?.id !== ALLOWED_PRODUCT_ID) return;
+
+  const userId = payment.member?.user?.id ?? payment.user?.id;
+  const username = payment.member?.user?.username ?? "unbekannt";
+  if (!userId) return;
+
+  const billingReason = payment.billing_reason;
+
+  if (billingReason === "subscription_create") {
+    const question = payment.custom_field_responses?.find(
+      (q: any) => q.question === TV_QUESTION_TEXT
+    );
+    const checkoutName = question?.answer;
+    if (checkoutName) {
+      await redis.set(tvNameKey(userId), checkoutName);
     }
   }
 
-  if (event.type === "membership.deactivated") {
-    try {
-      await notifyChurn(event.data);
-    } catch (e) {
-      console.error("Fehler bei membership.deactivated Verarbeitung:", e);
-    }
-  }
+  const tvName = (await redis.get<string>(tvNameKey(userId))) ?? "-";
 
-  return NextResponse.json({ received: true });
+  await notifyTvName({
+    userId,
+    username,
+    tvName,
+    membershipId: payment.membership?.id,
+    billingReason:
+      billingReason === "subscription_create"
+        ? "subscription_create"
+        : "subscription_cycle",
+  });
+}
+
+// Kündigung (Churn) - unverändert
+async function handleMembershipDeactivated(membership: any) {
+  if (membership.product?.id !== ALLOWED_PRODUCT_ID) return;
+  await notifyChurn(membership);
 }
