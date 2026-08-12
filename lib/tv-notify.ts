@@ -47,17 +47,26 @@ export async function getUserBasicInfo(userId: string) {
 
 
 
+
+
+
+
+
+
+
+
+
+
 export async function getMembershipDetails(userId: string, companyId: string, productId?: string) {
   try {
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
       user_ids: [userId],
-      statuses: ["active", "trialing"],
+      statuses: ["active", "trialing", "completed"], // completed = abgeschlossene Lifetime-Käufe (one_time)
       first: 10,
     } as any);
 
     let membership: any = null;
-
     if (productId) {
       membership = memberships.data.find((m: any) => m.product?.id === productId) ?? null;
     } else {
@@ -83,6 +92,8 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
     return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
   }
 }
+
+
 
 
 
