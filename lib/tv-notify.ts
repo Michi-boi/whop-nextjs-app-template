@@ -51,12 +51,6 @@ export async function getUserBasicInfo(userId: string) {
 
 
 
-
-
-
-
-
-
 export async function getMembershipDetails(userId: string, companyId: string, productId?: string) {
   try {
     const memberships = await whopsdk.memberships.list({
@@ -77,21 +71,43 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
       return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
     }
 
+    // Zyklus-Anzeige je nach Status bestimmen
+    let zyklus: string | null;
+    if (membership.status === "completed") {
+      zyklus = "Lifetime";
+    } else if (membership.status === "trialing") {
+      zyklus = "Testphase";
+    } else {
+      zyklus = membership.formatted_renewal_price ?? membership.initial_price_paid ?? null;
+    }
+
+    // trialEndsAt nur bei echter Trial sinnvoll befüllen, sonst renewal_period_end (oder null bei Lifetime)
+    let trialEndsAt: string | null;
+    if (membership.status === "completed") {
+      trialEndsAt = null; // Lifetime hat kein Ablaufdatum
+    } else {
+      trialEndsAt = membership.renewal_period_end ?? null;
+    }
+
     return {
       username: membership.user?.username ?? null,
       name: membership.user?.name ?? null,
       email: membership.user?.email ?? null,
       produkt: membership.product?.title ?? null,
       produkt_id: membership.product?.id ?? null,
-      zyklus: membership.formatted_renewal_price ?? membership.initial_price_paid ?? null,
+      zyklus,
       status: membership.status ?? null,
-      trialEndsAt: membership.renewal_period_end ?? null,
+      trialEndsAt,
     };
   } catch (e) {
     console.error("getMembershipDetails fehlgeschlagen:", e);
     return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
   }
 }
+
+
+
+
 
 
 
