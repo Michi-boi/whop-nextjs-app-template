@@ -73,7 +73,7 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
     //  initial_price_paid: membership.initial_price_paid,
     //}, null, 2));
 
-    console.log("DEBUG membership FULL:", JSON.stringify(membership, null, 2));
+    //console.log("DEBUG membership FULL:", JSON.stringify(membership, null, 2));
     
     // Zyklus-Anzeige je nach Status bestimmen
     let zyklus: string | null;
