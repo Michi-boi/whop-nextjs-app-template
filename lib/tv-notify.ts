@@ -47,20 +47,6 @@ export async function getUserBasicInfo(userId: string) {
 
 
 
-
-if (!membership) {
-  return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
-}
-
-console.log("DEBUG membership:", JSON.stringify({
-  status: membership.status,
-  renewal_period_end: membership.renewal_period_end,
-  formatted_renewal_price: membership.formatted_renewal_price,
-  initial_price_paid: membership.initial_price_paid,
-}, null, 2));
-
-
-
 export async function getMembershipDetails(userId: string, companyId: string, productId?: string) {
   try {
     const memberships = await whopsdk.memberships.list({
@@ -69,17 +55,23 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
       statuses: ["active", "trialing", "completed"], // completed = abgeschlossene Lifetime-Käufe (one_time)
       first: 10,
     } as any);
-
     let membership: any = null;
     if (productId) {
       membership = memberships.data.find((m: any) => m.product?.id === productId) ?? null;
     } else {
       membership = memberships.data[0] ?? null;
     }
-
     if (!membership) {
       return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
     }
+
+    // DEBUG: kurz reinschauen, wie Whop den Status/Preis wirklich liefert
+    console.log("DEBUG membership:", JSON.stringify({
+      status: membership.status,
+      renewal_period_end: membership.renewal_period_end,
+      formatted_renewal_price: membership.formatted_renewal_price,
+      initial_price_paid: membership.initial_price_paid,
+    }, null, 2));
 
     // Zyklus-Anzeige je nach Status bestimmen
     let zyklus: string | null;
