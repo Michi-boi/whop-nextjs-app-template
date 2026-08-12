@@ -48,6 +48,16 @@ export async function getUserBasicInfo(userId: string) {
 
 
 
+if (!membership) {
+  return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
+}
+
+console.log("DEBUG membership:", JSON.stringify({
+  status: membership.status,
+  renewal_period_end: membership.renewal_period_end,
+  formatted_renewal_price: membership.formatted_renewal_price,
+  initial_price_paid: membership.initial_price_paid,
+}, null, 2));
 
 
 
