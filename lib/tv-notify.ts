@@ -66,13 +66,15 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
     }
 
     // DEBUG: kurz reinschauen, wie Whop den Status/Preis wirklich liefert
-    console.log("DEBUG membership:", JSON.stringify({
-      status: membership.status,
-      renewal_period_end: membership.renewal_period_end,
-      formatted_renewal_price: membership.formatted_renewal_price,
-      initial_price_paid: membership.initial_price_paid,
-    }, null, 2));
+    //console.log("DEBUG membership:", JSON.stringify({
+    //  status: membership.status,
+    //  renewal_period_end: membership.renewal_period_end,
+    //  formatted_renewal_price: membership.formatted_renewal_price,
+    //  initial_price_paid: membership.initial_price_paid,
+    //}, null, 2));
 
+    console.log("DEBUG membership FULL:", JSON.stringify(membership, null, 2));
+    
     // Zyklus-Anzeige je nach Status bestimmen
     let zyklus: string | null;
     if (membership.status === "completed") {
