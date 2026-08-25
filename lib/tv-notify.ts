@@ -1,4 +1,3 @@
-
 // und der andere:
 import { Redis } from "@upstash/redis";
 import { whopsdk } from "@/lib/whop-sdk";
@@ -43,12 +42,70 @@ export async function getUserBasicInfo(userId: string) {
   }
 }
 
+// NEU: Mapping-Logik ausgelagert, damit sie sowohl vom direkten
+// membershipId-Abruf als auch von der Listen-Suche genutzt werden kann.
+function mapMembership(membership: any) {
+  if (!membership) {
+    return {
+      username: null,
+      name: null,
+      email: null,
+      produkt: null,
+      produkt_id: null,
+      zyklus: null,
+      status: null,
+      trialEndsAt: null,
+    };
+  }
 
+  // Zyklus-Anzeige je nach Status bestimmen
+  let zyklus: string | null;
+  if (membership.status === "completed") {
+    zyklus = "Lifetime";
+  } else if (membership.status === "trialing") {
+    zyklus = "Testphase";
+  } else {
+    zyklus = membership.formatted_renewal_price ?? membership.initial_price_paid ?? null;
+  }
 
+  // trialEndsAt nur bei echter Trial sinnvoll befüllen, sonst renewal_period_end (oder null bei Lifetime)
+  let trialEndsAt: string | null;
+  if (membership.status === "completed") {
+    trialEndsAt = null; // Lifetime hat kein Ablaufdatum
+  } else {
+    trialEndsAt = membership.renewal_period_end ?? null;
+  }
 
+  return {
+    username: membership.user?.username ?? null,
+    name: membership.user?.name ?? null,
+    email: membership.user?.email ?? null,
+    produkt: membership.product?.title ?? null,
+    produkt_id: membership.product?.id ?? null,
+    zyklus,
+    status: membership.status ?? null,
+    trialEndsAt,
+  };
+}
 
-export async function getMembershipDetails(userId: string, companyId: string, productId?: string) {
+export async function getMembershipDetails(
+  userId: string,
+  companyId: string,
+  productId?: string,
+  membershipId?: string // NEU
+) {
   try {
+    // NEU: Wenn die konkrete membershipId bekannt ist (z.B. aus dem
+    // payment.succeeded-Webhook-Payload), diese direkt abrufen statt per
+    // Liste zu suchen. Das verhindert, dass bei parallel existierenden
+    // Memberships zum selben Produkt (z.B. Monats-Abo noch aktiv, während
+    // Lifetime gerade gekauft wird) die falsche/alte Membership gezogen
+    // wird oder die Suche durch Timing/Eventual-Consistency ins Leere läuft.
+    if (membershipId) {
+      const membership = await whopsdk.memberships.retrieve(membershipId);
+      return mapMembership(membership);
+    }
+
     const memberships = await whopsdk.memberships.list({
       company_id: companyId,
       user_ids: [userId],
@@ -61,62 +118,12 @@ export async function getMembershipDetails(userId: string, companyId: string, pr
     } else {
       membership = memberships.data[0] ?? null;
     }
-    if (!membership) {
-      return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
-    }
-
-    // DEBUG: kurz reinschauen, wie Whop den Status/Preis wirklich liefert
-    //console.log("DEBUG membership:", JSON.stringify({
-    //  status: membership.status,
-    //  renewal_period_end: membership.renewal_period_end,
-    //  formatted_renewal_price: membership.formatted_renewal_price,
-    //  initial_price_paid: membership.initial_price_paid,
-    //}, null, 2));
-
-    //console.log("DEBUG membership FULL:", JSON.stringify(membership, null, 2));
-    
-    // Zyklus-Anzeige je nach Status bestimmen
-    let zyklus: string | null;
-    if (membership.status === "completed") {
-      zyklus = "Lifetime";
-    } else if (membership.status === "trialing") {
-      zyklus = "Testphase";
-    } else {
-      zyklus = membership.formatted_renewal_price ?? membership.initial_price_paid ?? null;
-    }
-
-    // trialEndsAt nur bei echter Trial sinnvoll befüllen, sonst renewal_period_end (oder null bei Lifetime)
-    let trialEndsAt: string | null;
-    if (membership.status === "completed") {
-      trialEndsAt = null; // Lifetime hat kein Ablaufdatum
-    } else {
-      trialEndsAt = membership.renewal_period_end ?? null;
-    }
-
-    return {
-      username: membership.user?.username ?? null,
-      name: membership.user?.name ?? null,
-      email: membership.user?.email ?? null,
-      produkt: membership.product?.title ?? null,
-      produkt_id: membership.product?.id ?? null,
-      zyklus,
-      status: membership.status ?? null,
-      trialEndsAt,
-    };
+    return mapMembership(membership);
   } catch (e) {
     console.error("getMembershipDetails fehlgeschlagen:", e);
-    return { username: null, name: null, email: null, produkt: null, produkt_id: null, zyklus: null, status: null, trialEndsAt: null };
+    return mapMembership(null);
   }
 }
-
-
-
-
-
-
-
-
-
 
 export async function getLastPaymentDate(
   userId: string,
@@ -161,10 +168,6 @@ export function statusTag(status: string | null): string {
   return "🔁 Bestandskunde (normale Zahlung, kein Trial)";
 }
 
-
-
-
-
 export function extractTvNameFromMembership(membership: any): string | null {
   const responses = membership?.custom_field_responses ?? [];
 
@@ -195,21 +198,22 @@ export function extractTvNameFromMembership(membership: any): string | null {
   return answer.answer ?? null;
 }
 
-
 export async function notifyTvName({
   userId,
   companyId,
   newName,
   payment,
   billingReason,
+  membershipId, // NEU
 }: {
   userId: string;
   companyId: string;
   newName: string | null;
   payment?: PaymentInfo | null;
   billingReason?: string | null;
+  membershipId?: string; // NEU
 }) {
-  const membershipDetails = await getMembershipDetails(userId, companyId, ALLOWED_PRODUCT_ID);
+  const membershipDetails = await getMembershipDetails(userId, companyId, ALLOWED_PRODUCT_ID, membershipId);
   if (membershipDetails.produkt_id !== ALLOWED_PRODUCT_ID) {
     return;
   }
@@ -315,16 +319,9 @@ export async function notifyTvName({
     });
   }
 
-
-  
   await sendDiscordEmbed({
     title: `${icon} ${title}`,
     color,
     fields,
   });
 }
-
-
-
-
-
