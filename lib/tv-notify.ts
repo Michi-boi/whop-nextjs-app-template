@@ -114,7 +114,17 @@ export async function getMembershipDetails(
     } as any);
     let membership: any = null;
     if (productId) {
-      membership = memberships.data.find((m: any) => m.product?.id === productId) ?? null;
+      const matches = memberships.data.filter((m: any) => m.product?.id === productId);
+      // NEU: Priorisierung, wenn mehrere Memberships zum selben Produkt
+      // existieren (z.B. Monats-Abo noch aktiv, während zusätzlich eine
+      // Lifetime-Membership besteht). Lifetime ("completed") soll immer
+      // Vorrang vor active/trialing haben, unabhängig von der
+      // Reihenfolge, in der die API sie zurückgibt.
+      membership =
+        matches.find((m: any) => m.status === "completed") ??
+        matches.find((m: any) => m.status === "active") ??
+        matches[0] ??
+        null;
     } else {
       membership = memberships.data[0] ?? null;
     }
