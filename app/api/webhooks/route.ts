@@ -1,3 +1,5 @@
+//WebHook 
+
 import { NextRequest, NextResponse } from "next/server";
 import { whopsdk } from "@/lib/whop-sdk";
 import { notifyTvName, extractTvNameFromMembership } from "@/lib/tv-notify";
@@ -53,7 +55,13 @@ export async function POST(req: NextRequest) {
       if (userId && companyId && membershipId) {
         const tvNameFromCheckout = await fetchTvNameWithRetry(membershipId, membershipData);
         if (tvNameFromCheckout) {
-          await notifyTvName({ userId, companyId, newName: tvNameFromCheckout, billingReason: "trial_started" });
+          await notifyTvName({
+            userId,
+            companyId,
+            newName: tvNameFromCheckout,
+            billingReason: "trial_started",
+            membershipId, // NEU: direkte Zuordnung statt Listen-Suche
+          });
         }
       }
     } catch (e) {
@@ -90,7 +98,21 @@ export async function POST(req: NextRequest) {
       const existing = await redis.get<string>(tvNameKey(userId));
 
       if (existing) {
-        await notifyTvName({ userId, companyId, newName: null, payment: paymentInfo, billingReason });
+        // NEU: membershipId wird mitgegeben, damit intern per direktem
+        // Abruf (statt Listen-Suche) genau die Membership dieser Zahlung
+        // geladen wird. Wichtig bei parallel existierenden Memberships
+        // zum selben Produkt (z.B. Monats-Abo noch aktiv, während gerade
+        // Lifetime gekauft wird) - sonst kann die Listen-Suche die
+        // falsche/alte Membership treffen oder wegen Timing leer bleiben,
+        // was die Benachrichtigung stillschweigend unterdrückt.
+        await notifyTvName({
+          userId,
+          companyId,
+          newName: null,
+          payment: paymentInfo,
+          billingReason,
+          membershipId,
+        });
       }
       // Kein existing -> noch kein Name bekannt (sollte durch
       // membership.activated normalerweise schon erfasst sein), dann gibt
